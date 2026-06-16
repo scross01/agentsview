@@ -45,6 +45,7 @@ const (
 	AgentAntigravity    AgentType = "antigravity"
 	AgentAntigravityCLI AgentType = "antigravity-cli"
 	AgentZed            AgentType = "zed"
+	AgentQwenPaw        AgentType = "qwenpaw"
 	AgentGptme          AgentType = "gptme"
 )
 
@@ -529,6 +530,17 @@ var Registry = []AgentDef{
 		FileBased:      true,
 		DiscoverFunc:   DiscoverAntigravityCLISessions,
 		FindSourceFunc: FindAntigravityCLISourceFile,
+	},
+	{
+		Type:           AgentQwenPaw,
+		DisplayName:    "QwenPaw",
+		EnvVar:         "QWENPAW_DIR",
+		ConfigKey:      "qwenpaw_dirs",
+		DefaultDirs:    []string{".copaw/workspaces"},
+		IDPrefix:       "qwenpaw:",
+		FileBased:      true,
+		DiscoverFunc:   DiscoverQwenPawSessions,
+		FindSourceFunc: FindQwenPawSourceFile,
 	},
 	{
 		Type:           AgentGptme,
