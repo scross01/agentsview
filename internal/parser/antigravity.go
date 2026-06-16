@@ -234,6 +234,64 @@ type antigravityStepLoadResult struct {
 	rawStepCount int
 }
 
+type antigravityStepKind int
+
+const (
+	antigravityStepKindUserInput       antigravityStepKind = 14
+	antigravityStepKindPlannerResponse antigravityStepKind = 15
+)
+
+type antigravityStep struct {
+	idx       int
+	kind      antigravityStepKind
+	fields    []agProtoField
+	timestamp time.Time
+	role      RoleType
+}
+
+func newAntigravityStep(
+	idx, stepType int, payload []byte,
+) (antigravityStep, bool) {
+	if len(payload) == 0 {
+		return antigravityStep{}, false
+	}
+	fields, err := agProtoParse(payload)
+	if err != nil || len(fields) == 0 {
+		return antigravityStep{}, false
+	}
+
+	kind := antigravityStepKindFromProto(fields, stepType)
+	role := roleForAntigravityStepKind(kind)
+
+	return antigravityStep{
+		idx:       idx,
+		kind:      kind,
+		fields:    fields,
+		timestamp: earliestAntigravityTimestamp(fields),
+		role:      role,
+	}, true
+}
+
+func antigravityStepKindFromProto(
+	fields []agProtoField, fallbackStepType int,
+) antigravityStepKind {
+	if f, ok := agProtoFind(fields, 1); ok && f.Wire == pbWireVarint {
+		return antigravityStepKind(f.Varint)
+	}
+	return antigravityStepKind(fallbackStepType)
+}
+
+func roleForAntigravityStepKind(kind antigravityStepKind) RoleType {
+	switch kind {
+	case antigravityStepKindUserInput:
+		return RoleUser
+	case antigravityStepKindPlannerResponse:
+		return RoleAssistant
+	default:
+		return RoleAssistant
+	}
+}
+
 func loadAntigravityStepsWithRawCount(
 	db *sql.DB,
 ) (antigravityStepLoadResult, error) {
@@ -500,10 +558,10 @@ func extractModelName(data []byte) string {
 // message whose low bytes (tags, varints, NULs) are valid UTF-8 --
 // agProtoString cannot tell those apart from text, and the raw bytes
 // previously leaked into messages.model (and broke `pg push`, which
-// rejects NUL bytes). Require every rune to be printable and at least
-// one letter to be present.
+// rejects NUL bytes). Require every rune to be printable, at least
+// one letter to be present, and a reasonable length (<= 64 chars).
 func isPlausibleModelName(s string) bool {
-	if s == "" {
+	if s == "" || len(s) > 64 {
 		return false
 	}
 	hasLetter := false
@@ -520,9 +578,9 @@ func isPlausibleModelName(s string) bool {
 
 // decodeAntigravityStep extracts a ParsedMessage from one step's
 // protobuf payload. Without an upstream .proto we use heuristics:
-//   - role: step_type 14 has been observed to carry user prompts.
-//     Every other type is rendered as assistant. (TODO: refine
-//     when more sample data is available.)
+//   - role: protobuf field 1 carries CortexStepType when present;
+//     USER_INPUT (14) is user, and PLANNER_RESPONSE (15) plus other
+//     non-user step kinds are assistant.
 //   - content: best-effort human-facing strings found in the
 //     payload tree. Internal ids, local Antigravity config paths,
 //     model placeholders, and duplicate payload echoes are filtered
@@ -534,31 +592,29 @@ func isPlausibleModelName(s string) bool {
 func decodeAntigravityStep(
 	idx, stepType int, payload []byte,
 ) (ParsedMessage, bool) {
-	if len(payload) == 0 {
+	step, ok := newAntigravityStep(idx, stepType, payload)
+	if !ok {
 		return ParsedMessage{}, false
-	}
-	fields, err := agProtoParse(payload)
-	if err != nil || len(fields) == 0 {
-		return ParsedMessage{}, false
-	}
-	ts := earliestAntigravityTimestamp(fields)
-
-	role := RoleAssistant
-	if stepType == 14 {
-		role = RoleUser
 	}
 
 	// Extract tool calls for assistant steps before the content guard
 	// so that tool-only steps (no displayable text) are not silently
 	// dropped.
 	var calls []ParsedToolCall
-	if role == RoleAssistant {
-		calls = extractAntigravityToolCalls(idx, fields)
+	if step.role == RoleAssistant {
+		calls = extractAntigravityToolCalls(step.idx, step.fields)
 	}
 
-	strs := cleanAntigravityStepStrings(
-		dedupeStrings(agProtoCollectStrings(fields, 20)), stepType,
-	)
+	strs, urlOnly := cleanAntigravityStepStrings(step)
+
+	// A non-user step whose only displayable content is a URL would
+	// otherwise vanish: the URL noise filter drops it and there are no
+	// tool calls to carry the step. Keep the URL rather than losing the
+	// message. Steps with other prose or a tool call keep the URL
+	// suppressed, since the noise filter still applies there.
+	if len(strs) == 0 && len(calls) == 0 {
+		strs = urlOnly
+	}
 
 	// Emit the message if it has displayable content OR tool calls.
 	// Tool-only assistant steps (empty prose) are valid.
@@ -568,32 +624,16 @@ func decodeAntigravityStep(
 
 	content := strings.Join(strs, "\n\n")
 	msg := ParsedMessage{
-		Role:          role,
+		Role:          step.role,
 		Content:       content,
 		ContentLength: len(content),
-		Timestamp:     ts,
+		Timestamp:     step.timestamp,
 	}
 	if len(calls) > 0 {
 		msg.ToolCalls = calls
 		msg.HasToolUse = true
 	}
 	return msg, true
-}
-
-// isLikelyToolName returns true if s is a reasonable candidate for a tool name:
-// - length between 1 and 64 characters
-// - contains only ASCII letters, digits, underscores, hyphens, and colons.
-func isLikelyToolName(s string) bool {
-	if len(s) == 0 || len(s) > 64 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		r := s[i]
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != ':' {
-			return false
-		}
-	}
-	return true
 }
 
 // knownAntigravityToolNames is the set of tool names that Antigravity
@@ -659,17 +699,12 @@ func extractAntigravityToolCalls(
 	var calls []ParsedToolCall
 	seen := map[string]bool{}
 	for i, s := range all {
-		if !isLikelyToolName(s) {
-			continue
-		}
-		cat := NormalizeToolCategory(s)
-		if cat == "Other" {
-			continue
-		}
 		// Reject generic taxonomy matches that are not known Antigravity tools.
 		if !isAntigravityToolName(s) {
 			continue
 		}
+		cat := NormalizeToolCategory(s)
+
 		// Look for an adjacent UUID-like string to use as ToolUseID.
 		// We scan the neighbouring strings (within a small window on
 		// either side) since the proto walker returns siblings in
@@ -783,24 +818,50 @@ func dedupeStrings(in []string) []string {
 	return out
 }
 
-func cleanAntigravityStepStrings(
-	strs []string, stepType int,
-) []string {
-	var cleaned []string
-	for _, s := range strs {
+// cleanAntigravityStepStrings returns the displayable strings for a step
+// and, separately, any bare-URL strings that the non-user noise filter
+// removed. Callers fall back to urlOnly when a step would otherwise have
+// no content, so URL-only assistant messages are not silently dropped.
+func cleanAntigravityStepStrings(step antigravityStep) (cleaned, urlOnly []string) {
+	for _, s := range dedupeStrings(agProtoCollectStrings(step.fields, 20)) {
 		s = strings.TrimSpace(s)
 		if isNoisyAntigravityStepString(s) {
+			continue
+		}
+		if step.role != RoleUser && isNoisyAntigravityNonUserStepString(s) {
 			continue
 		}
 		cleaned = append(cleaned, s)
 	}
 	cleaned = dedupeStrings(cleaned)
-	if stepType == 14 {
-		if prompt := bestAntigravityUserPrompt(cleaned); prompt != "" {
-			return []string{prompt}
+	bareURLs := collectAntigravityBareURLs(step.fields)
+	if step.role == RoleUser {
+		// A short URL-only prompt (e.g. "https://go.dev") falls below the
+		// 20-rune prose threshold, so include bare URLs as prompt
+		// candidates; prose, when present, still outscores a bare link.
+		candidates := append(append([]string{}, cleaned...), bareURLs...)
+		if prompt := bestAntigravityUserPrompt(candidates); prompt != "" {
+			return []string{prompt}, nil
+		}
+		return cleaned, nil
+	}
+	return cleaned, bareURLs
+}
+
+// collectAntigravityBareURLs returns bare-URL strings from the step
+// tree regardless of the 20-rune prose threshold used for general
+// content. Short links such as "https://go.dev" fall below that
+// threshold yet are real assistant content, so a URL-only step needs a
+// dedicated low-threshold pass to survive the content guard.
+func collectAntigravityBareURLs(fields []agProtoField) []string {
+	var out []string
+	for _, s := range agProtoCollectStrings(fields, 1) {
+		s = strings.TrimSpace(s)
+		if isNoisyAntigravityNonUserStepString(s) {
+			out = append(out, s)
 		}
 	}
-	return cleaned
+	return dedupeStrings(out)
 }
 
 func isNoisyAntigravityStepString(s string) bool {
@@ -844,6 +905,17 @@ func isNoisyAntigravityStepString(s string) bool {
 		return true
 	}
 	return false
+}
+
+func isNoisyAntigravityNonUserStepString(s string) bool {
+	if !strings.HasPrefix(s, "http://") &&
+		!strings.HasPrefix(s, "https://") {
+		return false
+	}
+	// Only a bare URL is metadata noise (the target echoed by tool
+	// actions). Assistant prose that merely begins with a link, which
+	// always contains whitespace, is real content and must be kept.
+	return !strings.ContainsAny(s, " \t\n")
 }
 
 func looksLikeAntigravityOpaqueID(s string) bool {
