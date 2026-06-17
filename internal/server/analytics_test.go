@@ -71,6 +71,9 @@ func seedAnalyticsEnv(t *testing.T, te *testEnv) seedStats {
 		)
 		te.seedMessages(t, s.id, s.msgs,
 			func(i int, m *db.Message) {
+				// Skill analytics now buckets and filters by message
+				// timestamp, so align messages with the session window.
+				m.Timestamp = started
 				// Add tool calls on every other assistant msg
 				if m.Role == "assistant" && i%4 == 1 {
 					m.HasToolUse = true
