@@ -3,6 +3,7 @@ package parser
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -603,6 +604,50 @@ func TestDiscoverAiderSessions(t *testing.T) {
 
 	// Empty root is tolerated.
 	assert.Empty(t, DiscoverAiderSessions(""))
+}
+
+func TestAiderShouldSkipProtectedHomeDirsOnlyOnDarwinHomeRoot(t *testing.T) {
+	home := filepath.Join(string(os.PathSeparator), "home", "user")
+
+	assert.True(t, aiderShouldSkipProtectedHomeDirs(home, home, "darwin"))
+	assert.False(t, aiderShouldSkipProtectedHomeDirs(home, home, "linux"))
+	assert.False(t, aiderShouldSkipProtectedHomeDirs(home, home, "windows"))
+	assert.False(t,
+		aiderShouldSkipProtectedHomeDirs(filepath.Join(home, "Documents"), home, "darwin"),
+		"explicit protected roots are user-scoped opt-ins")
+}
+
+func TestDiscoverAiderSessionsSkipsMacOSProtectedDirs(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS TCC protected-directory pruning is Darwin-only")
+	}
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	for _, name := range []string{"Desktop", "Documents", "Downloads"} {
+		protectedRepo := filepath.Join(root, name, "proj")
+		require.NoError(t, os.MkdirAll(protectedRepo, 0o755))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(protectedRepo, ".aider.chat.history.md"),
+			[]byte("# aider chat started at 2026-06-09 14:01:00\n"), 0o644))
+	}
+
+	files := DiscoverAiderSessions(root)
+	assert.Empty(t, files, "default home discovery must not enter macOS TCC-protected folders")
+}
+
+func TestDiscoverAiderSessionsAllowsExplicitProtectedRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	documentsRoot := filepath.Join(home, "Documents")
+	repo := filepath.Join(documentsRoot, "proj")
+	require.NoError(t, os.MkdirAll(repo, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(repo, ".aider.chat.history.md"),
+		[]byte("# aider chat started at 2026-06-09 14:01:00\n"), 0o644))
+
+	files := DiscoverAiderSessions(documentsRoot)
+	require.Len(t, files, 1, "explicit Aider roots should still be scanned")
+	assert.Equal(t, filepath.Join(repo, ".aider.chat.history.md"), files[0].Path)
 }
 
 // TestAiderWalkBudget documents the wall-clock budget (MUST-FIX 3,
