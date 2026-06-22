@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,36 @@ const (
 	groupUsage = "usage"
 	groupMeta  = "meta"
 )
+
+const dataVersionTooNewExitCode = 3
+
+type cliExitError struct {
+	code int
+	err  error
+}
+
+func (e *cliExitError) Error() string {
+	return e.err.Error()
+}
+
+func (e *cliExitError) Unwrap() error {
+	return e.err
+}
+
+func withExitCode(err error, code int) error {
+	if err == nil {
+		return nil
+	}
+	return &cliExitError{code: code, err: err}
+}
+
+func exitCodeFromError(err error) int {
+	var exitErr *cliExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.code
+	}
+	return 1
+}
 
 func newRootCommand() *cobra.Command {
 	var showVersion bool
@@ -90,21 +121,30 @@ func newRootCommand() *cobra.Command {
 
 func newServeCommand() *cobra.Command {
 	var background bool
+	var checkDataVersion bool
 	cmd := &cobra.Command{
 		Use:          "serve",
 		Short:        "Start server",
 		GroupID:      groupCore,
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if checkDataVersion {
+				cfg, err := config.LoadReadOnly()
+				if err != nil {
+					return err
+				}
+				return runServeDataVersionCheck(cfg)
+			}
 			if background {
 				// Acquire the launch lock before loading config; config
 				// loading writes config.toml and must be single-writer
 				// across concurrent launches.
 				runServeBackgroundCommand(cmd)
-				return
+				return nil
 			}
 			runServe(mustLoadConfig(cmd))
+			return nil
 		},
 	}
 	cmd.Flags().BoolVar(
@@ -113,10 +153,25 @@ func newServeCommand() *cobra.Command {
 		false,
 		"Start server in the background and return to the shell",
 	)
+	cmd.Flags().BoolVar(
+		&checkDataVersion,
+		"check-data-version",
+		false,
+		"Check whether the configured database is compatible with this binary",
+	)
+	_ = cmd.Flags().MarkHidden("check-data-version")
 	config.RegisterServePFlags(cmd.Flags())
 	cmd.AddCommand(newServeStatusCommand())
 	cmd.AddCommand(newServeStopCommand())
 	return cmd
+}
+
+func runServeDataVersionCheck(cfg config.Config) error {
+	err := db.CheckDataVersion(cfg.DBPath)
+	if db.IsDataVersionTooNew(err) {
+		return withExitCode(err, dataVersionTooNewExitCode)
+	}
+	return err
 }
 
 func newServeStatusCommand() *cobra.Command {

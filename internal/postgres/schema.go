@@ -280,6 +280,9 @@ func EnsureSchema(
 	if err != nil {
 		return fmt.Errorf("invalid schema name: %w", err)
 	}
+	if err := CheckDataVersionCompat(ctx, db); err != nil {
+		return err
+	}
 	step := time.Now()
 	if _, err := db.ExecContext(ctx,
 		"CREATE SCHEMA IF NOT EXISTS "+quoted,
@@ -1508,6 +1511,29 @@ func CheckSchemaCompat(
 		return fmt.Errorf("secret_findings table missing required columns: %w", err)
 	}
 	rows.Close()
+	return nil
+}
+
+// CheckDataVersionCompat rejects PG datasets containing rows written by a
+// newer agentsview parser. PG does not have SQLite's global user_version, so
+// the highest session data_version is the compatibility marker.
+func CheckDataVersionCompat(ctx context.Context, pg *sql.DB) error {
+	var version int
+	err := pg.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(data_version), 0) FROM sessions`,
+	).Scan(&version)
+	if err != nil {
+		if isUndefinedTable(err) || isUndefinedColumn(err) {
+			return nil
+		}
+		return fmt.Errorf("checking PG data version: %w", err)
+	}
+	if version > db.CurrentDataVersion() {
+		return &db.DataVersionTooNewError{
+			DatabaseVersion: version,
+			BinaryVersion:   db.CurrentDataVersion(),
+		}
+	}
 	return nil
 }
 
