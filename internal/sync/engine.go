@@ -121,6 +121,30 @@ type Engine struct {
 // returns.
 func (e *Engine) PhaseStats() *PhaseStats { return &e.phaseStats }
 
+// refuseWriteInForceParse guards the public sync entrypoints against an
+// engine created by NewDiffEngine, whose forceParse mode exists purely
+// for report-only re-parsing. Such an engine is also Ephemeral, so a
+// write would persist nothing useful, but it would still rewrite or
+// re-derive archive rows -- exactly what the report-only contract
+// promises not to do. Rather than widen the read-only surface into a
+// separate interface (which would change NewDiffEngine's return type and
+// break ParseDiff callers), the write entrypoints refuse and log when
+// forceParse is set. A real sync engine never sets forceParse, so this
+// is a no-op for every production caller.
+//
+// It returns true when the caller must abort. op names the refused
+// entrypoint for the log line.
+func (e *Engine) refuseWriteInForceParse(op string) bool {
+	if !e.forceParse {
+		return false
+	}
+	log.Printf(
+		"sync: refusing %s on a report-only (parse-diff) engine; "+
+			"forceParse engines never write", op,
+	)
+	return true
+}
+
 // codexExecMigrationKey is the pg_sync_state flag that
 // records whether the one-time cleanup of legacy codex_exec
 // skip cache entries has already run on this database.
@@ -392,6 +416,9 @@ type syncJob struct {
 // Paths that don't match known session file patterns are
 // silently ignored.
 func (e *Engine) SyncPaths(paths []string) {
+	if e.refuseWriteInForceParse("SyncPaths") {
+		return
+	}
 	files := e.classifyPaths(paths)
 	if len(files) == 0 {
 		return
@@ -1951,6 +1978,9 @@ const resyncTempSuffix = "-resync"
 func (e *Engine) ResyncAll(
 	ctx context.Context, onProgress ProgressFunc,
 ) (stats SyncStats) {
+	if e.refuseWriteInForceParse("ResyncAll") {
+		return SyncStats{}
+	}
 	e.syncMu.Lock()
 	// Defers LIFO: Unlock runs before emit.
 	defer func() {
@@ -2517,6 +2547,9 @@ func (e *Engine) SyncThenRun(
 	onProgress ProgressFunc,
 	work func(forceFull bool) error,
 ) (stats SyncStats, err error) {
+	if e.refuseWriteInForceParse("SyncThenRun") {
+		return SyncStats{}, nil
+	}
 	e.syncMu.Lock()
 	// Defers run LIFO: Unlock runs before emit.
 	defer func() {
@@ -2555,6 +2588,11 @@ func (e *Engine) SyncThenRun(
 // sync and resync operations. Use this for daemon-owned maintenance operations
 // that must serialize with sync but should not force a local sync first.
 func (e *Engine) RunExclusive(work func() error) error {
+	if e.refuseWriteInForceParse("RunExclusive") {
+		return errors.New(
+			"RunExclusive refused on report-only parse-diff engine",
+		)
+	}
 	e.syncMu.Lock()
 	defer e.syncMu.Unlock()
 	return work()
@@ -2564,6 +2602,9 @@ func (e *Engine) RunExclusive(work func() error) error {
 func (e *Engine) SyncAll(
 	ctx context.Context, onProgress ProgressFunc,
 ) (stats SyncStats) {
+	if e.refuseWriteInForceParse("SyncAll") {
+		return SyncStats{}
+	}
 	e.syncMu.Lock()
 	// Defers run LIFO: Unlock runs before the emit closure so
 	// Emitter implementations cannot widen the syncMu critical
@@ -2591,6 +2632,9 @@ func (e *Engine) SyncAll(
 func (e *Engine) SyncAllSince(
 	ctx context.Context, since time.Time, onProgress ProgressFunc,
 ) (stats SyncStats) {
+	if e.refuseWriteInForceParse("SyncAllSince") {
+		return SyncStats{}
+	}
 	e.syncMu.Lock()
 	defer func() {
 		if stats.Synced > 0 {
@@ -2612,6 +2656,9 @@ func (e *Engine) SyncRootsSince(
 	ctx context.Context, roots []string, since time.Time,
 	onProgress ProgressFunc,
 ) (stats SyncStats) {
+	if e.refuseWriteInForceParse("SyncRootsSince") {
+		return SyncStats{}
+	}
 	e.syncMu.Lock()
 	defer func() {
 		if stats.Synced > 0 {
@@ -4077,6 +4124,7 @@ type incrementalUpdate struct {
 	userMsgCount         int // total (old + new)
 	fileSize             int64
 	fileMtime            int64
+	fileHash             string
 	nextOrdinal          int
 	lastEntryUUID        string
 	totalOutputTokens    int // absolute (old + new)
@@ -4730,6 +4778,20 @@ func (e *Engine) tryIncrementalJSONL(
 		}
 	}
 
+	// Persist the same effective file_mtime a full parse would store. For
+	// Codex that folds in session_index.jsonl (parser.CodexEffectiveMtime),
+	// exactly as ParseCodexSession sets File.Mtime; a full sync of the same
+	// file stores that effective value. Keeping the incremental write on the
+	// same basis means parse-diff's raced guard -- which reads the freshly
+	// parsed effective File.Mtime -- compares against a matching stored
+	// file_mtime no matter whether the last write was incremental or full,
+	// and shouldSkipCodex's storedMtime==effectiveMtime fast path stays
+	// accurate. Plain JSONL agents (Claude/Gemini) keep the raw stat.
+	incMtime := info.ModTime().UnixNano()
+	if agent == parser.AgentCodex {
+		incMtime = parser.CodexEffectiveMtime(file.Path, incMtime)
+	}
+
 	newMsgs, endedAt, consumed, err := parseFn(
 		file.Path, inc.FileSize, inc.NextOrdinal, inc.LastEntryUUID,
 	)
@@ -4759,6 +4821,12 @@ func (e *Engine) tryIncrementalJSONL(
 	// info.Size(), so partial lines at EOF are retried on
 	// the next sync.
 	newOffset := inc.FileSize + consumed
+	var incHash string
+	if agent == parser.AgentCodex {
+		if hash, err := ComputeFileHashPrefix(file.Path, newOffset); err == nil {
+			incHash = hash
+		}
+	}
 
 	if len(newMsgs) == 0 {
 		// No new messages, but advance the offset past
@@ -4774,7 +4842,8 @@ func (e *Engine) tryIncrementalJSONL(
 					msgCount:             inc.MsgCount,
 					userMsgCount:         inc.UserMsgCount,
 					fileSize:             newOffset,
-					fileMtime:            info.ModTime().UnixNano(),
+					fileMtime:            incMtime,
+					fileHash:             incHash,
 					nextOrdinal:          inc.NextOrdinal,
 					lastEntryUUID:        inc.LastEntryUUID,
 					totalOutputTokens:    inc.TotalOutputTokens,
@@ -4847,7 +4916,8 @@ func (e *Engine) tryIncrementalJSONL(
 			msgCount:             inc.MsgCount + len(newMsgs),
 			userMsgCount:         inc.UserMsgCount + newUserCount,
 			fileSize:             newOffset,
-			fileMtime:            info.ModTime().UnixNano(),
+			fileMtime:            incMtime,
+			fileHash:             incHash,
 			nextOrdinal:          nextOrdinal,
 			lastEntryUUID:        lastEntryUUID,
 			totalOutputTokens:    totalOut,
@@ -4890,25 +4960,13 @@ func (e *Engine) shouldSkipCodex(
 		!e.codexIndexSessionNameChanged(path)
 }
 
-// codexIndexMtimeChanged returns true when session_index.jsonl is newer
-// than the stored DB mtime, meaning a title rename happened since the
-// last parse, regardless of whether the session file itself also changed.
-func (e *Engine) codexIndexMtimeChanged(path string) bool {
-	indexMtime := parser.CodexEffectiveMtime(path, 0)
-	if indexMtime == 0 {
-		return false
-	}
-	lookupPath := path
-	if e.pathRewriter != nil {
-		lookupPath = e.pathRewriter(path)
-	}
-	_, storedMtime, ok := e.db.GetFileInfoByPath(lookupPath)
-	if !ok {
-		return false
-	}
-	return indexMtime > storedMtime && e.codexIndexSessionNameChanged(path)
-}
-
+// codexIndexNeedsRefreshSince reports whether a Codex session whose transcript
+// predates the cutoff still needs a refresh because its session_index.jsonl
+// title changed at or after the cutoff. It compares the index title to the
+// stored session_name directly rather than gating on indexMtime > storedMtime:
+// the incremental write folds the index mtime into the stored file_mtime, so a
+// title-only rename whose index mtime is <= that stored value would otherwise
+// be filtered out and the stale title would never resolve.
 func (e *Engine) codexIndexNeedsRefreshSince(
 	path string, cutoffNs int64,
 ) bool {
@@ -4920,11 +4978,10 @@ func (e *Engine) codexIndexNeedsRefreshSince(
 	if e.pathRewriter != nil {
 		lookupPath = e.pathRewriter(path)
 	}
-	_, storedMtime, ok := e.db.GetFileInfoByPath(lookupPath)
-	if !ok {
+	if _, _, ok := e.db.GetFileInfoByPath(lookupPath); !ok {
 		return false
 	}
-	return indexMtime > storedMtime && e.codexIndexSessionNameChanged(path)
+	return e.codexIndexSessionNameChanged(path)
 }
 
 func (e *Engine) codexIndexSessionNameChanged(path string) bool {
@@ -5066,8 +5123,15 @@ func (e *Engine) processCodex(
 		file, info, parser.AgentCodex, codexParseFn,
 	); ok {
 		if !projectNeedsReparse {
-			indexMtimeChanged := e.codexIndexMtimeChanged(file.Path)
-			if !indexMtimeChanged {
+			// Force a full parse whenever the index title differs from the
+			// stored session_name. A mtime gate (indexMtime > storedMtime) is
+			// not enough here: the incremental write folds the index mtime into
+			// the stored file_mtime, so a later rename whose index mtime is <=
+			// that stored value slips past the gate. shouldSkipCodex's
+			// storedMtime==effectiveMtime fast path would then skip the refresh
+			// forever, stranding the stale title. Comparing the name directly
+			// closes that window.
+			if !e.codexIndexSessionNameChanged(file.Path) {
 				return res
 			}
 			// The index title changed, so a full parse still needs to refresh
@@ -6842,6 +6906,11 @@ func computeFinalStreak(calls []signals.ToolCallRow) int {
 func (e *Engine) RecomputeSignals(
 	ctx context.Context, sessionID string,
 ) error {
+	if e.refuseWriteInForceParse("RecomputeSignals") {
+		return errors.New(
+			"RecomputeSignals refused on report-only parse-diff engine",
+		)
+	}
 	return e.recomputeSignalsFromDB(ctx, sessionID)
 }
 
@@ -7797,8 +7866,9 @@ func shouldReplaceFullParseMessages(
 
 // writeIncremental appends new messages and partially updates
 // session metadata without overwriting columns that are not
-// recomputed during incremental parsing (e.g. file_hash,
-// parent_session_id, relationship_type).
+// recomputed during incremental parsing (e.g. parent_session_id,
+// relationship_type). Codex refreshes file_hash because parse-diff
+// uses it as the transcript fingerprint for raced-skew detection.
 func (e *Engine) writeIncremental(
 	inc *incrementalUpdate,
 ) error {
@@ -7832,6 +7902,7 @@ func (e *Engine) writeIncremental(
 			UserMsgCount:         userMsgCount,
 			FileSize:             inc.fileSize,
 			FileMtime:            inc.fileMtime,
+			FileHash:             strPtr(inc.fileHash),
 			NextOrdinal:          inc.nextOrdinal,
 			LastEntryUUID:        inc.lastEntryUUID,
 			TotalOutputTokens:    inc.totalOutputTokens,
@@ -8794,6 +8865,12 @@ func (e *Engine) SyncSingleSession(sessionID string) (err error) {
 func (e *Engine) SyncSingleSessionContext(
 	ctx context.Context, sessionID string,
 ) (err error) {
+	if e.refuseWriteInForceParse("SyncSingleSession") {
+		return fmt.Errorf(
+			"cannot sync session %s on a report-only (parse-diff) engine",
+			sessionID,
+		)
+	}
 	e.syncMu.Lock()
 	preserved := false
 	// Defers run LIFO: unlock runs first (releasing syncMu), then
@@ -10037,6 +10114,11 @@ func (e *Engine) ScanSecrets(
 	ctx context.Context, in SecretScanInput,
 	progress func(SecretScanProgress),
 ) (SecretScanSummary, error) {
+	if e.refuseWriteInForceParse("ScanSecrets") {
+		return SecretScanSummary{}, errors.New(
+			"ScanSecrets refused on report-only parse-diff engine",
+		)
+	}
 	ver := secrets.RulesVersion()
 	ids, err := e.db.SecretScanCandidates(ctx, db.SecretScanCandidateFilter{
 		CurrentVersion: ver, OnlyStale: in.Backfill,
