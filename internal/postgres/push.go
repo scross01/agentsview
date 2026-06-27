@@ -25,8 +25,8 @@ const (
 )
 
 // pushMarkerIDStateKey names the local sync-state entry holding this DB's
-// stable push-marker identifier. pushMarkerKeyPrefix prefixes that identifier
-// to form the PG sync_metadata key under which the marker row is stored.
+// stable push-marker identifier. The push-marker prefixes form PG
+// sync_metadata keys for reset-detection marker rows.
 const (
 	pushMarkerIDStateKey              = "pg_push_marker_id"
 	pushMarkerKeyPrefix               = "push_marker:"
@@ -153,19 +153,24 @@ func (s *Sync) Push(
 		}
 	}
 
-	// Coherence check: if the local watermark says we've pushed
-	// before but this host's push marker is gone from PG, the PG side
-	// was reset (schema dropped, DB recreated, etc.). Force a full
-	// push so all sessions are re-synced.
-	if lastPush != "" {
+	// Coherence check: if local push state says we've pushed before
+	// but this host's push marker is gone from PG, the PG side was
+	// reset (schema dropped, DB recreated, etc.). Force a full push
+	// so fingerprint-matched sessions are not skipped while missing
+	// from PG. Boundary state counts here too: a partial first push
+	// can leave last_push_at empty while still caching fingerprints
+	// for successfully pushed sessions.
+	if lastPush != "" || boundaryState != "" {
 		if !markerExists {
 			log.Printf(
-				"pgsync: local watermark set but PG push marker " +
+				"pgsync: local push state set but PG push marker " +
 					"missing; PG was reset, forcing full push",
 			)
 			lastPush = ""
 			full = true
-			legacyMarkerMachines = nil
+			if len(legacyMarkerMachines) == 0 {
+				legacyMarkerMachines = nil
+			}
 			s.schemaMu.Lock()
 			s.schemaDone = false
 			s.schemaMu.Unlock()
@@ -285,19 +290,13 @@ func (s *Sync) Push(
 
 	if len(sessions) == 0 {
 		if s.isFiltered() {
-			// Filtered pushes must not advance the global
-			// watermark but should still update fingerprints
-			// so repeated filtered runs stay incremental.
-			// Use cutoff as the boundary key when lastPush
-			// is empty (--full/PG reset) so that the next
-			// filtered run can match fingerprints.
-			boundaryKey := lastPush
-			if boundaryKey == "" {
-				boundaryKey = cutoff
-			}
-			if err := writePushBoundaryState(
-				state, boundaryKey, sessions,
+			// Filtered pushes use filter-scoped sync state, so
+			// they can advance their own watermark without
+			// moving the unfiltered/global cursor.
+			if err := finalizeFilteredPushState(
+				state, lastPush, cutoff, sessions,
 				priorFingerprints, sessionFingerprints,
+				result.Errors,
 			); err != nil {
 				return result, err
 			}
@@ -373,21 +372,13 @@ func (s *Sync) Push(
 	}
 
 	if s.isFiltered() {
-		// Filtered pushes update fingerprints for pushed
-		// sessions so subsequent filtered runs stay
-		// incremental, but do not advance the global
-		// watermark past sessions from other projects.
-		// Use cutoff as the boundary key when lastPush is
-		// empty (--full/PG reset) so the next filtered
-		// run can match fingerprints instead of
-		// re-pushing everything.
-		boundaryKey := lastPush
-		if boundaryKey == "" {
-			boundaryKey = cutoff
-		}
-		if err := writePushBoundaryState(
-			state, boundaryKey, pushed,
+		// Filtered pushes use filter-scoped sync state, so
+		// they can advance their own watermark without moving
+		// the unfiltered/global cursor.
+		if err := finalizeFilteredPushState(
+			state, lastPush, cutoff, pushed,
 			priorFingerprints, sessionFingerprints,
+			result.Errors,
 		); err != nil {
 			return result, err
 		}
@@ -433,6 +424,11 @@ func (s *Sync) Push(
 // pgPushMarkerMachineState reports whether this host's push marker is present
 // in PG and returns the current machine plus legacy machine aliases stored with
 // the marker.
+//
+// Scoped marker keys are authoritative for reset detection. If a scoped marker
+// is missing, legacy unscoped marker metadata is still returned as alias
+// history so ownerless rows from older agentsview versions can be adopted after
+// a machine rename.
 // A missing marker while the local watermark is set means PG was reset (schema
 // dropped or recreated) since this host last pushed, so a full re-push is
 // needed. Counting rows by machine cannot detect this reliably: another host
@@ -443,39 +439,84 @@ func (s *Sync) Push(
 func (s *Sync) pgPushMarkerMachineState(
 	ctx context.Context, markerID string,
 ) (string, []string, bool, error) {
-	var machine string
-	err := s.pg.QueryRowContext(ctx,
-		`SELECT value FROM sync_metadata WHERE key = $1`,
-		pushMarkerKeyPrefix+markerID,
-	).Scan(&machine)
+	markerKey := s.pushMarkerMetadataKey(pushMarkerKeyPrefix, markerID)
+	machine, markerExists, err := s.pgPushMarkerMetadataValue(
+		ctx, markerKey,
+	)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", nil, false, nil
-		}
-		if isUndefinedTable(err) {
-			return "", nil, false, nil
-		}
 		return "", nil, false, fmt.Errorf(
 			"checking pg push marker: %w", err,
 		)
 	}
-	aliases, err := s.pgPushMarkerMachineAliases(ctx, markerID)
+	if markerExists {
+		aliases, err := s.pgPushMarkerMachineAliases(
+			ctx,
+			s.pushMarkerMetadataKey(
+				pushMarkerMachineAliasesKeyPrefix, markerID,
+			),
+		)
+		if err != nil {
+			return "", nil, false, err
+		}
+		return machine, aliases, true, nil
+	}
+	if s.syncStateTarget == "" {
+		return "", nil, false, nil
+	}
+
+	legacyMachine, legacyMarkerExists, err := s.pgPushMarkerMetadataValue(
+		ctx, pushMarkerKeyPrefix+markerID,
+	)
+	if err != nil {
+		return "", nil, false, fmt.Errorf(
+			"checking legacy pg push marker: %w", err,
+		)
+	}
+	aliases, err := s.pgPushMarkerMachineAliases(
+		ctx, pushMarkerMachineAliasesKeyPrefix+markerID,
+	)
 	if err != nil {
 		return "", nil, false, err
 	}
-	return machine, aliases, true, nil
+	if !legacyMarkerExists && len(aliases) == 0 {
+		return "", nil, false, nil
+	}
+	return legacyMachine, aliases, false, nil
+}
+
+func (s *Sync) pgPushMarkerMetadataValue(
+	ctx context.Context, key string,
+) (string, bool, error) {
+	var value string
+	err := s.pg.QueryRowContext(ctx,
+		`SELECT value FROM sync_metadata WHERE key = $1`,
+		key,
+	).Scan(&value)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		if isUndefinedTable(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return value, true, nil
 }
 
 func (s *Sync) pgPushMarkerMachineAliases(
-	ctx context.Context, markerID string,
+	ctx context.Context, key string,
 ) ([]string, error) {
 	var raw string
 	err := s.pg.QueryRowContext(ctx,
 		`SELECT value FROM sync_metadata WHERE key = $1`,
-		pushMarkerMachineAliasesKeyPrefix+markerID,
+		key,
 	).Scan(&raw)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if isUndefinedTable(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf(
@@ -517,7 +558,7 @@ func (s *Sync) writePushMarker(
 		`INSERT INTO sync_metadata (key, value)
 		 VALUES ($1, $2)
 		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-		pushMarkerKeyPrefix+markerID, s.machine,
+		s.pushMarkerMetadataKey(pushMarkerKeyPrefix, markerID), s.machine,
 	); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("writing pg push marker: %w", err)
@@ -526,7 +567,8 @@ func (s *Sync) writePushMarker(
 		`INSERT INTO sync_metadata (key, value)
 		 VALUES ($1, $2)
 		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-		pushMarkerMachineAliasesKeyPrefix+markerID, string(aliasesJSON),
+		s.pushMarkerMetadataKey(pushMarkerMachineAliasesKeyPrefix, markerID),
+		string(aliasesJSON),
 	); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("writing pg push marker machine aliases: %w", err)
@@ -535,6 +577,14 @@ func (s *Sync) writePushMarker(
 		return fmt.Errorf("committing pg push marker: %w", err)
 	}
 	return nil
+}
+
+func (s *Sync) pushMarkerMetadataKey(prefix, markerID string) string {
+	if s.syncStateTarget == "" {
+		return prefix + markerID
+	}
+	sum := sha256.Sum256([]byte(s.syncStateTarget))
+	return prefix + markerID + ":scope:" + hex.EncodeToString(sum[:8])
 }
 
 func pushMarkerLegacyMachines(machine string, aliases []string) []string {
@@ -783,11 +833,28 @@ func finalizePushState(
 	)
 }
 
-// clearPushState resets the watermark and boundary state so that
-// the next push starts from scratch. Used when a filtered push
-// runs --full or detects a PG reset, to avoid leaving stale
-// state that would cause the next unfiltered push to skip
-// sessions.
+func finalizeFilteredPushState(
+	local syncStateStore,
+	lastPush, cutoff string,
+	sessions []db.Session,
+	priorFingerprints map[string]string,
+	sessionFingerprints map[string]string,
+	errors int,
+) error {
+	finalizeCutoff := cutoff
+	var mergedFingerprints map[string]string
+	if errors > 0 {
+		finalizeCutoff = lastPush
+		mergedFingerprints = priorFingerprints
+	}
+	return finalizePushState(
+		local, finalizeCutoff, sessions,
+		mergedFingerprints, sessionFingerprints,
+	)
+}
+
+// clearPushState resets the active watermark and boundary state so
+// that the next push for this sync-state scope starts from scratch.
 func clearPushState(local syncStateStore) error {
 	if err := local.SetSyncState(
 		lastPushBoundaryStateKey, "",
