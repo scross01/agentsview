@@ -233,6 +233,7 @@ func TestApplyWorktreeProjectMappingsToSessionUsesCurrentSessionState(
 func TestApplyWorktreeProjectMappingToSessionFromSyncDoesNotBumpLocalModifiedAt(
 	t *testing.T,
 ) {
+
 	d := testDB(t)
 	ctx := context.Background()
 	prefix := filepath.Join(t.TempDir(), "repo.worktrees")

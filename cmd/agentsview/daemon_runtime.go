@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -34,8 +35,14 @@ const (
 	runtimeCreateTime      = "create_time"
 	runtimeCaddyPID        = "caddy_pid"
 	runtimeCaddyCreateTime = "caddy_create_time"
-	startProbeTick         = 250 * time.Millisecond
+	defaultStartProbeTick  = 250 * time.Millisecond
 )
+
+var startProbeTickNanos int64 = int64(defaultStartProbeTick)
+
+func startProbeTick() time.Duration {
+	return time.Duration(atomic.LoadInt64(&startProbeTickNanos))
+}
 
 // DaemonRuntime is the agentsview-specific view of a kit daemon runtime record.
 type DaemonRuntime struct {
@@ -626,7 +633,10 @@ func isExternalDaemonStarting(dataDir string) bool {
 	lock := flock.New(path)
 	locked, err := lock.TryLock()
 	if err != nil {
-		return false
+		// On Windows, probing a lock held by a helper process can report an
+		// error instead of a clean locked=false result. Treat uncertainty as
+		// active startup so replacement does not stop the incumbent daemon.
+		return true
 	}
 	if locked {
 		_ = lock.Unlock()
@@ -706,7 +716,8 @@ func WaitForDaemonStartupContext(
 		if !IsDaemonStarting(dataDir) {
 			return false
 		}
-		timer := time.NewTimer(startProbeTick)
+		wait := min(time.Until(deadline), startProbeTick())
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			timer.Stop()

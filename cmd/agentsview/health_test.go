@@ -5,12 +5,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/dbtest"
 	"go.kenn.io/agentsview/internal/service"
 )
 
@@ -252,10 +252,7 @@ func TestHealthListFilterIncludesAllSessions(t *testing.T) {
 }
 
 func TestResolveHealthSessionIDMatchesDisplayedShortID(t *testing.T) {
-	dir := t.TempDir()
-	database, err := db.Open(filepath.Join(dir, "test.db"))
-	require.NoError(t, err, "open db")
-	t.Cleanup(func() { database.Close() })
+	database := dbtest.OpenTestDB(t)
 
 	require.NoError(t, database.UpsertSession(db.Session{
 		ID: "abcdef1234567890", Project: "p", Machine: "m",
@@ -273,10 +270,7 @@ func TestResolveHealthSessionIDMatchesDisplayedShortID(t *testing.T) {
 }
 
 func TestResolveHealthSessionIDExactMatchCanBeOutsideHealthList(t *testing.T) {
-	dir := t.TempDir()
-	database, err := db.Open(filepath.Join(dir, "test.db"))
-	require.NoError(t, err, "open db")
-	t.Cleanup(func() { database.Close() })
+	database := dbtest.OpenTestDB(t)
 
 	parentID := "parent-session"
 	require.NoError(t, database.UpsertSession(db.Session{
@@ -300,24 +294,25 @@ func TestResolveHealthSessionIDExactMatchCanBeOutsideHealthList(t *testing.T) {
 }
 
 func TestResolveHealthSessionIDPartialMatchCanBeOutsideHealthList(t *testing.T) {
-	dir := t.TempDir()
-	database, err := db.Open(filepath.Join(dir, "test.db"))
-	require.NoError(t, err, "open db")
-	t.Cleanup(func() { database.Close() })
+	database := dbtest.OpenTestDB(t)
 
+	writes := make([]db.SessionBatchWrite, 0, maxHealthLimit+1)
 	for i := range maxHealthLimit {
 		started := fmt.Sprintf("2026-04-15T12:%02d:%02dZ", i/60, i%60)
-		require.NoError(t, database.UpsertSession(db.Session{
+		writes = append(writes, db.SessionBatchWrite{Session: db.Session{
 			ID:      fmt.Sprintf("newer-session-%03d", i),
 			Project: "p", Machine: "m", Agent: "claude",
 			MessageCount: 1, StartedAt: &started,
-		}), "upsert newer session")
+		}})
 	}
 	oldStarted := "2020-01-01T00:00:00Z"
-	require.NoError(t, database.UpsertSession(db.Session{
+	writes = append(writes, db.SessionBatchWrite{Session: db.Session{
 		ID: "old-partial-target", Project: "p", Machine: "m",
 		Agent: "codex", MessageCount: 1, StartedAt: &oldStarted,
-	}), "upsert old partial target")
+	}})
+	result, err := database.WriteSessionBatchAtomic(writes)
+	require.NoError(t, err, "seed health sessions")
+	require.Equal(t, maxHealthLimit+1, result.WrittenSessions)
 
 	got, err := resolveHealthSessionID(
 		context.Background(),
@@ -352,10 +347,7 @@ func TestResolveHealthSessionIDUsesDaemonPartialLookup(t *testing.T) {
 func TestResolveHealthSessionIDExactMatchStillChecksShortIDAmbiguity(
 	t *testing.T,
 ) {
-	dir := t.TempDir()
-	database, err := db.Open(filepath.Join(dir, "test.db"))
-	require.NoError(t, err, "open db")
-	t.Cleanup(func() { database.Close() })
+	database := dbtest.OpenTestDB(t)
 
 	require.NoError(t, database.UpsertSession(db.Session{
 		ID: "abcdef12", Project: "p", Machine: "m",
@@ -379,10 +371,7 @@ func TestResolveHealthSessionIDExactMatchStillChecksShortIDAmbiguity(
 }
 
 func TestResolveSessionID(t *testing.T) {
-	dir := t.TempDir()
-	database, err := db.Open(filepath.Join(dir, "test.db"))
-	require.NoError(t, err, "open db")
-	t.Cleanup(func() { database.Close() })
+	database := dbtest.OpenTestDB(t)
 
 	upsert := func(id string) {
 		t.Helper()
@@ -452,10 +441,7 @@ func TestResolveSessionID(t *testing.T) {
 // with timestamps that push the collider past position 5 and
 // confirm ambiguity is still reported.
 func TestResolveSessionIDCollisionBeyondTopFew(t *testing.T) {
-	dir := t.TempDir()
-	database, err := db.Open(filepath.Join(dir, "test.db"))
-	require.NoError(t, err, "open db")
-	t.Cleanup(func() { database.Close() })
+	database := dbtest.OpenTestDB(t)
 
 	upsert := func(id string, started string) {
 		t.Helper()
@@ -490,7 +476,7 @@ func TestResolveSessionIDCollisionBeyondTopFew(t *testing.T) {
 	upsert(partial+"-collide", "2020-01-01T00:00:00Z")
 
 	ctx := context.Background()
-	_, err = resolveSessionID(ctx, database, partial)
+	_, err := resolveSessionID(ctx, database, partial)
 	require.Error(t, err, "expected ambiguity error")
 	assert.Contains(t, err.Error(), "ambiguous",
 		"error lacks 'ambiguous'")

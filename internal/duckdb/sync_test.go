@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/dbtest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -468,6 +470,23 @@ func TestClearSessionTablesRollsBackWithTransaction(t *testing.T) {
 	assertDuckDBCount(t, syncer.DB(), "usage_events", 1)
 }
 
+func clearSessionTables(ctx context.Context, tx *sql.Tx) error {
+	for _, stmt := range []string{
+		`DELETE FROM pinned_messages`,
+		`DELETE FROM secret_findings`,
+		`DELETE FROM tool_result_events`,
+		`DELETE FROM tool_calls`,
+		`DELETE FROM usage_events`,
+		`DELETE FROM messages`,
+		`DELETE FROM sessions`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("clearing duckdb full-push session table: %w", err)
+		}
+	}
+	return nil
+}
+
 func TestSyncProjectFiltersMatchPushScope(t *testing.T) {
 	ctx := context.Background()
 	local := newLocalDB(t)
@@ -511,7 +530,7 @@ func TestSyncFilteredFullClearsGlobalWatermarkForLaterUnfilteredPush(t *testing.
 	watermark, err := local.GetSyncState(lastPushStateKey)
 	require.NoError(t, err)
 	assert.Empty(t, watermark)
-	fingerprints, err := readSyncFingerprints(local)
+	fingerprints, err := readSyncFingerprintsWithKey(local, lastPushBoundaryStateKey)
 	require.NoError(t, err)
 	assert.Contains(t, fingerprints, fixture.alphaID)
 	assert.NotContains(t, fingerprints, "stale")
@@ -704,12 +723,7 @@ type syncFixture struct {
 
 func newLocalDB(t *testing.T) *db.DB {
 	t.Helper()
-	local, err := db.Open(filepath.Join(t.TempDir(), "local.sqlite"))
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, local.Close())
-	})
-	return local
+	return dbtest.OpenTestDB(t)
 }
 
 func newTestSync(
