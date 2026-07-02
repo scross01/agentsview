@@ -11,32 +11,24 @@ import (
 	"strings"
 	"time"
 
+	"go.kenn.io/agentsview/internal/parser"
 	pricingpkg "go.kenn.io/agentsview/internal/pricing"
 )
 
-func IsCopilotAgent(agent string) bool {
-	return agent == "copilot" || agent == "vscode-copilot" || agent == "visualstudio-copilot"
-}
+// aiCreditUSD is the USD value of one AI credit for agents whose cost
+// is denominated in AI credits (the AICreditsDenominated capability).
+const aiCreditUSD = 0.01
 
-// IsCopilotAgentFilter reports whether a (possibly comma-separated) agent
-// filter selects only Copilot agents — every non-empty entry is a Copilot
-// agent and there is at least one. The Usage agent filter supports
-// comma-separated lists (e.g. "copilot,vscode-copilot"), so the no-token-data
-// hint must treat such a list as Copilot rather than exact-matching the raw
-// string.
-func IsCopilotAgentFilter(agentFilter string) bool {
-	matched := false
-	for part := range strings.SplitSeq(agentFilter, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		if !IsCopilotAgent(part) {
-			return false
-		}
-		matched = true
+// AICreditsFromCost converts a USD cost into AI credits when the
+// agent's cost is denominated in AI credits, and returns 0 otherwise.
+// It is the single home of the credit conversion shared by the SQLite,
+// PostgreSQL, and DuckDB usage paths; a per-agent credit rate would
+// slot in here rather than at each accumulation site.
+func AICreditsFromCost(agent string, costUSD float64) float64 {
+	if costUSD == 0 || !parser.AgentNameUsesAICredits(agent) {
+		return 0
 	}
-	return matched
+	return costUSD / aiCreditUSD
 }
 
 // NoTokenData reports whether a daily-usage total carries neither token
@@ -1853,14 +1845,12 @@ func (db *DB) GetDailyUsage(
 		}
 		totals.CacheSavings = totalSavings
 
-		var copilotCost float64
+		var aiCredits float64
 		for key, b := range accum {
-			if IsCopilotAgent(key.agent) {
-				copilotCost += b.cost
-			}
+			aiCredits += AICreditsFromCost(key.agent, b.cost)
 		}
-		if copilotCost > 0 {
-			totals.CopilotAICredits = copilotCost / 0.01
+		if aiCredits > 0 {
+			totals.CopilotAICredits = aiCredits
 		}
 		var sessionCounts UsageSessionCounts
 		if seenSessions != nil {
@@ -2028,16 +2018,14 @@ func (db *DB) GetDailyUsage(
 
 	totals.CacheSavings = totalSavings
 
-	var copilotCost float64
+	var aiCredits float64
 	for _, d := range daily {
 		for _, ab := range d.AgentBreakdowns {
-			if IsCopilotAgent(ab.Agent) {
-				copilotCost += ab.Cost
-			}
+			aiCredits += AICreditsFromCost(ab.Agent, ab.Cost)
 		}
 	}
-	if copilotCost > 0 {
-		totals.CopilotAICredits = copilotCost / 0.01
+	if aiCredits > 0 {
+		totals.CopilotAICredits = aiCredits
 	}
 
 	var sessionCounts UsageSessionCounts
@@ -2344,9 +2332,7 @@ func (db *DB) GetSessionUsage(
 	}
 	if out.HasCost {
 		out.CostUSD = cost
-	}
-	if IsCopilotAgent(sess.Agent) && out.HasCost {
-		out.AICredits = cost / 0.01
+		out.AICredits = AICreditsFromCost(sess.Agent, cost)
 	}
 	if len(unpricedSet) > 0 {
 		out.UnpricedModels = sortedSetKeys(unpricedSet)

@@ -3624,14 +3624,12 @@ func (s *Store) GetDailyUsage(
 	result.Totals.CacheSavings = roundCost(totalSavings)
 	result.Totals.TotalCost = roundCost(result.Totals.TotalCost)
 
-	var copilotCost float64
+	var aiCredits float64
 	for key, b := range accum {
-		if db.IsCopilotAgent(key.agent) {
-			copilotCost += b.cost
-		}
+		aiCredits += db.AICreditsFromCost(key.agent, b.cost)
 	}
-	if copilotCost > 0 {
-		result.Totals.CopilotAICredits = copilotCost / 0.01
+	if aiCredits > 0 {
+		result.Totals.CopilotAICredits = aiCredits
 	}
 
 	if result.Daily == nil {
@@ -3957,9 +3955,7 @@ func (s *Store) GetSessionUsage(
 	if len(unpriced) == 0 && hasRows {
 		out.HasCost = true
 		out.CostUSD = roundCost(totalCost)
-	}
-	if db.IsCopilotAgent(sess.Agent) && out.HasCost && out.CostUSD > 0 {
-		out.AICredits = out.CostUSD / 0.01
+		out.AICredits = db.AICreditsFromCost(sess.Agent, out.CostUSD)
 	}
 	return out, nil
 }

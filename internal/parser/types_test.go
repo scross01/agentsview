@@ -129,6 +129,88 @@ func TestInferTokenPresence(t *testing.T) {
 	}
 }
 
+func TestAgentUsageCapabilities(t *testing.T) {
+	tests := []struct {
+		name        string
+		agent       AgentType
+		wantNoToken bool
+		wantCredits bool
+	}{
+		{
+			name:        "copilot",
+			agent:       AgentCopilot,
+			wantNoToken: true,
+			wantCredits: true,
+		},
+		{
+			name:        "vscode copilot",
+			agent:       AgentVSCodeCopilot,
+			wantNoToken: true,
+			wantCredits: true,
+		},
+		{
+			name:        "visual studio copilot",
+			agent:       AgentVSCopilot,
+			wantNoToken: true,
+			wantCredits: true,
+		},
+		{
+			name:  "claude",
+			agent: AgentClaude,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.wantNoToken,
+				AgentNameLacksPerMessageTokenData(string(tc.agent)))
+			assert.Equal(t, tc.wantCredits,
+				AgentNameUsesAICredits(string(tc.agent)))
+		})
+	}
+}
+
+func TestAgentCopilotIdentity(t *testing.T) {
+	tests := []struct {
+		name  string
+		agent AgentType
+		want  bool
+	}{
+		{"copilot", AgentCopilot, true},
+		{"vscode copilot", AgentVSCodeCopilot, true},
+		{"visual studio copilot", AgentVSCopilot, true},
+		{"claude", AgentClaude, false},
+		{"unknown", AgentType("unknown-agent"), false},
+		{"empty", AgentType(""), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, AgentIsCopilot(tc.agent))
+			assert.Equal(t, tc.want, AgentNameIsCopilot(string(tc.agent)))
+		})
+	}
+}
+
+func TestAgentFilterIsCopilot(t *testing.T) {
+	tests := []struct {
+		name   string
+		filter string
+		want   bool
+	}{
+		{"empty", "", false},
+		{"single copilot", "copilot", true},
+		{"all-copilot CSV with spaces", " copilot , visualstudio-copilot ", true},
+		{"trailing comma", "copilot,vscode-copilot,", true},
+		{"mixed CSV", "copilot,claude", false},
+		{"only commas", ",", false},
+		{"single non-copilot", "claude", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, AgentFilterIsCopilot(tc.filter))
+		})
+	}
+}
+
 func TestAgentByType(t *testing.T) {
 	tests := []struct {
 		input AgentType

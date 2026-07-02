@@ -70,6 +70,7 @@ type AgentDef struct {
 	WatchSubdirs      []string // subdirs to watch (nil = watch root)
 	ShallowWatch      bool     // true = watch root only, rely on periodic sync for subdirs
 	FileBased         bool     // false for DB-backed agents
+	Usage             UsageCapabilities
 
 	// WatchRootsFunc resolves the directories to watch for live
 	// updates under a configured root, for agents whose watch
@@ -84,6 +85,11 @@ type AgentDef struct {
 	// live outside the session tree, such as Codex's
 	// session_index.jsonl. Nil for agents with no such files.
 	ShallowWatchRootsFunc func(string) []string
+}
+
+type UsageCapabilities struct {
+	NoPerMessageTokenData bool
+	AICreditsDenominated  bool
 }
 
 // Registry lists all supported agents. Order is stable and
@@ -141,6 +147,10 @@ var Registry = []AgentDef{
 		IDPrefix:     "copilot:",
 		WatchSubdirs: []string{"session-state"},
 		FileBased:    true,
+		Usage: UsageCapabilities{
+			NoPerMessageTokenData: true,
+			AICreditsDenominated:  true,
+		},
 	},
 	{
 		Type:         AgentGemini,
@@ -268,6 +278,10 @@ var Registry = []AgentDef{
 			"globalStorage",
 		},
 		FileBased: true,
+		Usage: UsageCapabilities{
+			NoPerMessageTokenData: true,
+			AICreditsDenominated:  true,
+		},
 	},
 	{
 		Type:        AgentVSCopilot,
@@ -284,6 +298,10 @@ var Registry = []AgentDef{
 		},
 		IDPrefix:  "visualstudio-copilot:",
 		FileBased: true,
+		Usage: UsageCapabilities{
+			NoPerMessageTokenData: true,
+			AICreditsDenominated:  true,
+		},
 	},
 	{
 		Type:        AgentPi,
@@ -621,6 +639,71 @@ func AgentByType(t AgentType) (AgentDef, bool) {
 		}
 	}
 	return AgentDef{}, false
+}
+
+// AgentNameLacksPerMessageTokenData reports whether the named agent
+// records no per-message token data. Names match registry types
+// exactly and unknown names fail closed; CSV filter parsing trims its
+// parts before calling.
+func AgentNameLacksPerMessageTokenData(agent string) bool {
+	def, ok := AgentByType(AgentType(agent))
+	return ok && def.Usage.NoPerMessageTokenData
+}
+
+// AgentNameUsesAICredits reports whether the named agent's cost is
+// denominated in AI credits rather than USD.
+func AgentNameUsesAICredits(agent string) bool {
+	def, ok := AgentByType(AgentType(agent))
+	return ok && def.Usage.AICreditsDenominated
+}
+
+// AgentFilterLacksPerMessageTokenData reports whether a (possibly
+// comma-separated) agent filter selects only agents without
+// per-message token data, with at least one entry.
+func AgentFilterLacksPerMessageTokenData(agentFilter string) bool {
+	return agentFilterMatches(agentFilter, AgentNameLacksPerMessageTokenData)
+}
+
+func agentFilterMatches(agentFilter string, match func(string) bool) bool {
+	matched := false
+	for part := range strings.SplitSeq(agentFilter, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if !match(part) {
+			return false
+		}
+		matched = true
+	}
+	return matched
+}
+
+// AgentIsCopilot reports whether t is one of the GitHub Copilot
+// family agents. Copilot-specific user-facing wording keys on this
+// identity; the usage capabilities above intentionally do not imply
+// it, so a future agent can adopt NoPerMessageTokenData or
+// AICreditsDenominated without inheriting Copilot messaging.
+func AgentIsCopilot(t AgentType) bool {
+	switch t {
+	case AgentCopilot, AgentVSCodeCopilot, AgentVSCopilot:
+		return true
+	}
+	return false
+}
+
+// AgentNameIsCopilot reports whether the agent name identifies a
+// Copilot-family agent. Names match exactly, like the capability
+// helpers above.
+func AgentNameIsCopilot(agent string) bool {
+	return AgentIsCopilot(AgentType(agent))
+}
+
+// AgentFilterIsCopilot reports whether a (possibly comma-separated)
+// agent filter selects only Copilot-family agents, with at least one
+// entry.
+func AgentFilterIsCopilot(agentFilter string) bool {
+	return agentFilterMatches(agentFilter, AgentNameIsCopilot)
 }
 
 // StripHostPrefix splits a remote session ID into its host

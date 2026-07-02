@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/parsertest"
 	"go.kenn.io/agentsview/internal/service"
 )
 
@@ -222,6 +224,84 @@ func TestUsageSummarySetsUnsupportedUsageForCopilotNoTokenData(t *testing.T) {
 	require.NotNil(t, resp.UnsupportedUsage)
 	assert.Equal(t,
 		service.UnsupportedUsageKindCopilotNoTokenData,
+		resp.UnsupportedUsage.Kind,
+	)
+	assertUsageQueryCalls(t, spy, 1, 0, 1)
+}
+
+func TestUsageSummarySetsUnsupportedUsageFromAgentCapability(t *testing.T) {
+	parsertest.StubAgentDefs(t, parser.AgentDef{
+		Type:        parser.AgentType("no-token-agent"),
+		DisplayName: "No Token Agent",
+		Usage: parser.UsageCapabilities{
+			NoPerMessageTokenData: true,
+		},
+	})
+
+	spy := &usageSummaryCountsSpy{
+		matchingSessionCount: 1,
+		result: db.DailyUsageResult{
+			Daily:  []db.DailyUsageEntry{{Date: "2024-06-01"}},
+			Totals: db.UsageTotals{},
+			SessionCounts: db.UsageSessionCounts{
+				Total:     0,
+				ByProject: map[string]int{},
+				ByAgent:   map[string]int{},
+			},
+		},
+	}
+	s := newRoutedTestServerWithStore(t, spy)
+
+	w := serveGet(t, s,
+		"/api/v1/usage/summary?"+oneDayUsageRange+"&agent=no-token-agent")
+	assertRecorderStatus(t, w, http.StatusOK)
+
+	var resp UsageSummaryResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.UnsupportedUsage)
+	assert.Equal(t,
+		service.UnsupportedUsageKindNoTokenData,
+		resp.UnsupportedUsage.Kind,
+	)
+	assertUsageQueryCalls(t, spy, 1, 0, 1)
+}
+
+// TestUsageSummaryKeepsGenericKindForNonCopilotAICreditAgent pins the
+// Copilot-branded kind to Copilot identity: an agent that shares both of
+// Copilot's usage capabilities must still surface the generic kind.
+func TestUsageSummaryKeepsGenericKindForNonCopilotAICreditAgent(t *testing.T) {
+	parsertest.StubAgentDefs(t, parser.AgentDef{
+		Type:        parser.AgentType("credit-note-agent"),
+		DisplayName: "Credit Note Agent",
+		Usage: parser.UsageCapabilities{
+			NoPerMessageTokenData: true,
+			AICreditsDenominated:  true,
+		},
+	})
+
+	spy := &usageSummaryCountsSpy{
+		matchingSessionCount: 1,
+		result: db.DailyUsageResult{
+			Daily:  []db.DailyUsageEntry{{Date: "2024-06-01"}},
+			Totals: db.UsageTotals{},
+			SessionCounts: db.UsageSessionCounts{
+				Total:     0,
+				ByProject: map[string]int{},
+				ByAgent:   map[string]int{},
+			},
+		},
+	}
+	s := newRoutedTestServerWithStore(t, spy)
+
+	w := serveGet(t, s,
+		"/api/v1/usage/summary?"+oneDayUsageRange+"&agent=credit-note-agent")
+	assertRecorderStatus(t, w, http.StatusOK)
+
+	var resp UsageSummaryResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.UnsupportedUsage)
+	assert.Equal(t,
+		service.UnsupportedUsageKindNoTokenData,
 		resp.UnsupportedUsage.Kind,
 	)
 	assertUsageQueryCalls(t, spy, 1, 0, 1)

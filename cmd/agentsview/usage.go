@@ -17,7 +17,9 @@ import (
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/pricing"
+	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/sync"
 )
 
@@ -192,18 +194,26 @@ func runUsageDaily(cfg UsageDailyConfig) {
 }
 
 // noTokenDataNote returns a one-line stderr note for a zero usage result when
-// the user has filtered to a Copilot agent whose records do not include token
-// or cost data that agentsview can total. It returns "" when the filter is not
-// a Copilot agent or real token/cost data exists. This is an agent-property
-// statement (issue #349) shown in response to an explicit --agent the user
-// typed, so it needs no session-presence check; it is appropriate even for an
-// empty window.
+// the user has filtered to agents that do not record per-message token usage.
+// The wording follows the service's unsupported-usage kind for the same
+// filter, so the CLI and the dashboard cannot drift: all-Copilot filters keep
+// the Copilot-specific wording and every other no-token filter gets the
+// generic note. It returns "" when the filter does not select only
+// no-token-data agents or real token/cost data exists. This is an
+// agent-property statement (issue #349) shown in response to an explicit
+// --agent the user typed, so it needs no session-presence check; it is
+// appropriate even for an empty window.
 func noTokenDataNote(agent string, totals db.UsageTotals) string {
-	if !db.IsCopilotAgentFilter(agent) || !db.NoTokenData(totals) {
+	if !parser.AgentFilterLacksPerMessageTokenData(agent) ||
+		!db.NoTokenData(totals) {
 		return ""
 	}
-	return "note: these GitHub Copilot records do not include token " +
-		"or cost data that agentsview can total."
+	if service.UnsupportedUsageKindForAgentFilter(agent) ==
+		service.UnsupportedUsageKindCopilotNoTokenData {
+		return "note: these GitHub Copilot records do not include token " +
+			"or cost data that agentsview can total."
+	}
+	return "note: matching sessions do not record per-message token usage."
 }
 
 type UsageStatuslineConfig struct {

@@ -586,14 +586,15 @@ func (b *directBackend) UsageSummary(
 		return nil, err
 	}
 	summary := buildUsageSummary(f, result)
-	if db.IsCopilotAgentFilter(f.Agent) && db.NoTokenData(result.Totals) {
+	if parser.AgentFilterLacksPerMessageTokenData(f.Agent) &&
+		db.NoTokenData(result.Totals) {
 		matchingSessions, err := b.db.GetUsageMatchingSessionCount(ctx, f)
 		if err != nil {
 			return nil, err
 		}
 		if matchingSessions > 0 {
 			summary.UnsupportedUsage = &UnsupportedUsage{
-				Kind: UnsupportedUsageKindCopilotNoTokenData,
+				Kind: UnsupportedUsageKindForAgentFilter(f.Agent),
 			}
 		}
 	}
