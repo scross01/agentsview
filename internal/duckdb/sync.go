@@ -38,6 +38,7 @@ type Sync struct {
 	excludeProjects []string
 	connectionKind  duckDBConnectionKind
 	quack           *quackClient
+	maintenance     duckDBMaintenance
 
 	closeOnce sync.Once
 	closeErr  error
@@ -120,6 +121,7 @@ func New(
 		syncStateScope:  opts.SyncStateTarget,
 		projects:        opts.Projects,
 		excludeProjects: opts.ExcludeProjects,
+		maintenance:     duckDBCheckpointMaintenance{},
 	}, nil
 }
 
@@ -268,13 +270,11 @@ func (s *Sync) Push(
 	if err != nil {
 		return result, fmt.Errorf("listing local sessions: %w", err)
 	}
-	result.Diagnostics.LocalSessions = countPushSessions(allLocalSessions)
-	sessionFingerprints, err := s.sessionFingerprints(ctx, sessions)
-	if err != nil {
-		return result, err
+	allLocalSessionByID := make(map[string]db.Session, len(allLocalSessions))
+	for _, sess := range allLocalSessions {
+		allLocalSessionByID[sess.ID] = sess
 	}
-	candidateSessions := append([]db.Session(nil), sessions...)
-	result.Diagnostics.CandidateSessions = countPushSessions(candidateSessions)
+	result.Diagnostics.LocalSessions = countPushSessions(allLocalSessions)
 	priorFingerprints := map[string]string{}
 	if !full {
 		priorFingerprints, err = readSyncFingerprintsWithKey(
@@ -284,19 +284,13 @@ func (s *Sync) Push(
 		if err != nil {
 			return result, err
 		}
-		sessions = filterUnchangedSessions(sessions, priorFingerprints, sessionFingerprints)
-		result.Diagnostics.SkippedUnchangedSessions = skippedPushSessions(
-			candidateSessions, sessions,
-		)
 	}
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].ID < sessions[j].ID
-	})
 
 	var staleIDs []string
+	var mirrorSessionIDs map[string]bool
 	err = s.withDuckTx(ctx, "delete hard-deleted sessions", func(tx *sql.Tx) error {
 		var txErr error
-		staleIDs, txErr = s.deleteHardDeletedMirrorSessions(
+		staleIDs, mirrorSessionIDs, txErr = s.deleteHardDeletedMirrorSessions(
 			ctx, tx, allLocalSessions, s.machine, s.projects, s.excludeProjects,
 		)
 		return txErr
@@ -308,13 +302,36 @@ func (s *Sync) Push(
 		delete(priorFingerprints, id)
 	}
 	result.Diagnostics.DeletedStaleSessions = len(staleIDs)
+	if !full {
+		missingMirrorIDs := pruneMissingMirrorFingerprints(
+			priorFingerprints, mirrorSessionIDs,
+		)
+		sessions = appendMissingMirrorRepairCandidates(
+			sessions, sessionByID, allLocalSessionByID, missingMirrorIDs,
+		)
+	}
+	sessionFingerprints, err := s.sessionFingerprints(ctx, sessions)
+	if err != nil {
+		return result, err
+	}
+	candidateSessions := append([]db.Session(nil), sessions...)
+	result.Diagnostics.CandidateSessions = countPushSessions(candidateSessions)
+	if !full {
+		sessions = filterUnchangedSessions(sessions, priorFingerprints, sessionFingerprints)
+		result.Diagnostics.SkippedUnchangedSessions = skippedPushSessions(
+			candidateSessions, sessions,
+		)
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].ID < sessions[j].ID
+	})
 
 	pushed := make([]db.Session, 0, len(sessions))
 	for start := 0; start < len(sessions); start += duckSessionPushBatchSize {
 		end := min(start+duckSessionPushBatchSize, len(sessions))
-		if err := s.pushSessionBatch(
+		if err := s.pushSessionBatchForMode(
 			ctx, sessions[start:end], start, len(sessions),
-			&result, &pushed, onProgress,
+			&result, &pushed, onProgress, full,
 		); err != nil {
 			return result, err
 		}
@@ -342,6 +359,11 @@ func (s *Sync) Push(
 			result.Errors,
 		)
 	}
+	if len(pushed) > 0 || len(staleIDs) > 0 {
+		if err := s.checkpointAfterMutatingPush(ctx); err != nil {
+			return result, err
+		}
+	}
 	if full && s.isFiltered() {
 		// Clear the global watermark so the next unfiltered push
 		// starts from scratch; finalizeState then persists fresh
@@ -359,6 +381,15 @@ func (s *Sync) Push(
 	}
 	result.Duration = time.Since(start)
 	return result, nil
+}
+
+func (s *Sync) checkpointAfterMutatingPush(ctx context.Context) error {
+	// CHECKPOINT is local-file maintenance. Quack targets route storage work
+	// through a remote server, so running it on the client handle is wrong.
+	if s.connectionKind == duckDBQuackClientConnection || s.maintenance == nil {
+		return nil
+	}
+	return s.maintenance.checkpointAfterPush(ctx, s.duck)
 }
 
 func (s *Sync) withDuckTx(
@@ -391,9 +422,30 @@ func (s *Sync) pushSessionBatch(
 	pushed *[]db.Session,
 	onProgress func(PushProgress),
 ) error {
+	return s.pushSessionBatchForMode(
+		ctx, sessions, offset, total, result, pushed, onProgress, false,
+	)
+}
+
+func (s *Sync) pushSessionBatchForMode(
+	ctx context.Context,
+	sessions []db.Session,
+	offset int,
+	total int,
+	result *PushResult,
+	pushed *[]db.Session,
+	onProgress func(PushProgress),
+	full bool,
+) error {
 	return pushSessionBatchWith(
 		ctx, sessions, offset, total, result, pushed, onProgress,
-		s.tryPushSessionBatch, s.pushSingleSession, waitAfterRemoteMutationTimeout,
+		func(ctx context.Context, sessions []db.Session) ([]int, error) {
+			return s.tryPushSessionBatch(ctx, sessions, full)
+		},
+		func(ctx context.Context, sess db.Session) (int, error) {
+			return s.pushSingleSession(ctx, sess, full)
+		},
+		waitAfterRemoteMutationTimeout,
 	)
 }
 
@@ -541,10 +593,10 @@ func reportDuckPushProgress(
 }
 
 func (s *Sync) tryPushSessionBatch(
-	ctx context.Context, sessions []db.Session,
+	ctx context.Context, sessions []db.Session, full bool,
 ) ([]int, error) {
 	if s.connectionKind == duckDBQuackClientConnection {
-		return s.tryPushRemoteSessionBatch(ctx, sessions)
+		return s.tryPushRemoteSessionBatch(ctx, sessions, full)
 	}
 	tx, err := s.duck.BeginTx(ctx, nil)
 	if err != nil {
@@ -554,7 +606,7 @@ func (s *Sync) tryPushSessionBatch(
 	messagesBySession := make([]int, len(sessions))
 
 	for i, sess := range sessions {
-		messages, err := s.pushSession(ctx, tx, sess)
+		messages, err := s.pushSession(ctx, tx, tx, sess, full)
 		if err != nil {
 			return nil, fmt.Errorf("pushing duckdb session %s: %w", sess.ID, err)
 		}
@@ -567,7 +619,7 @@ func (s *Sync) tryPushSessionBatch(
 }
 
 func (s *Sync) tryPushRemoteSessionBatch(
-	ctx context.Context, sessions []db.Session,
+	ctx context.Context, sessions []db.Session, full bool,
 ) ([]int, error) {
 	const batchLabel = "duckdb remote session batch"
 
@@ -576,7 +628,9 @@ func (s *Sync) tryPushRemoteSessionBatch(
 
 	for i, sess := range sessions {
 		sessionBatch := &duckRemoteMutationBatch{}
-		messages, err := s.pushSession(ctx, sessionBatch, sess)
+		messages, err := s.pushSession(
+			ctx, sessionBatch, s.targetQueryer(), sess, full,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("pushing duckdb remote session %s: %w", sess.ID, err)
 		}
@@ -612,16 +666,18 @@ func (s *Sync) tryPushRemoteSessionBatch(
 	return messagesBySession, nil
 }
 
-func (s *Sync) pushSingleSession(ctx context.Context, sess db.Session) (int, error) {
+func (s *Sync) pushSingleSession(
+	ctx context.Context, sess db.Session, full bool,
+) (int, error) {
 	if s.connectionKind == duckDBQuackClientConnection {
-		return s.pushSingleRemoteSession(ctx, sess)
+		return s.pushSingleRemoteSession(ctx, sess, full)
 	}
 	tx, err := s.duck.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin duckdb session tx %s: %w", sess.ID, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	messages, err := s.pushSession(ctx, tx, sess)
+	messages, err := s.pushSession(ctx, tx, tx, sess, full)
 	if err != nil {
 		return 0, err
 	}
@@ -631,9 +687,11 @@ func (s *Sync) pushSingleSession(ctx context.Context, sess db.Session) (int, err
 	return messages, nil
 }
 
-func (s *Sync) pushSingleRemoteSession(ctx context.Context, sess db.Session) (int, error) {
+func (s *Sync) pushSingleRemoteSession(
+	ctx context.Context, sess db.Session, full bool,
+) (int, error) {
 	batch := &duckRemoteMutationBatch{}
-	messages, err := s.pushSession(ctx, batch, sess)
+	messages, err := s.pushSession(ctx, batch, s.targetQueryer(), sess, full)
 	if err != nil {
 		return 0, err
 	}
@@ -832,6 +890,41 @@ func filterUnchangedSessions(
 		out = append(out, sess)
 	}
 	return out
+}
+
+func pruneMissingMirrorFingerprints(
+	priorFingerprints map[string]string,
+	mirrorSessionIDs map[string]bool,
+) []string {
+	var missing []string
+	for id := range priorFingerprints {
+		if !mirrorSessionIDs[id] {
+			delete(priorFingerprints, id)
+			missing = append(missing, id)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+func appendMissingMirrorRepairCandidates(
+	sessions []db.Session,
+	sessionByID map[string]db.Session,
+	allLocalSessionByID map[string]db.Session,
+	missingMirrorIDs []string,
+) []db.Session {
+	for _, id := range missingMirrorIDs {
+		sess, ok := allLocalSessionByID[id]
+		if !ok {
+			continue
+		}
+		if _, ok := sessionByID[id]; ok {
+			continue
+		}
+		sessionByID[id] = sess
+		sessions = append(sessions, sess)
+	}
+	return sessions
 }
 
 func previousLocalSyncTimestamp(value string) (string, error) {

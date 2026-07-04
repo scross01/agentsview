@@ -221,20 +221,72 @@ func (s *Sync) replaceStarredSessions(
 }
 
 func (s *Sync) pushSession(
-	ctx context.Context, exec duckMutationExecutor, sess db.Session,
+	ctx context.Context,
+	exec duckMutationExecutor,
+	target duckQueryer,
+	sess db.Session,
+	full bool,
 ) (int, error) {
 	if err := s.upsertSession(ctx, exec, sess); err != nil {
-		return 0, err
-	}
-	if err := s.replaceSessionDependents(ctx, exec, sess.ID); err != nil {
-		return 0, err
-	}
-	if err := s.replaceUsageEvents(ctx, exec, sess.ID); err != nil {
 		return 0, err
 	}
 	msgs, err := s.local.GetAllMessages(ctx, sess.ID)
 	if err != nil {
 		return 0, fmt.Errorf("reading local messages for %s: %w", sess.ID, err)
+	}
+
+	if !full {
+		action, err := s.duckMessagePushAction(ctx, target, sess.ID, msgs)
+		if err != nil {
+			return 0, err
+		}
+		switch action.kind {
+		case duckMessagePushSkip:
+			if err := s.replaceSessionSecretFindings(ctx, exec, sess.ID); err != nil {
+				return 0, err
+			}
+			if err := s.replaceSessionPinnedMessages(ctx, exec, sess.ID); err != nil {
+				return 0, err
+			}
+			return 0, nil
+		case duckMessagePushAppend:
+			suffix := messagesAfterDuckOrdinal(msgs, action.maxOrdinal)
+			if len(suffix) == 0 {
+				return 0, fmt.Errorf(
+					"duckdb append %s: no local suffix after ordinal %d",
+					sess.ID, action.maxOrdinal,
+				)
+			}
+			if err := s.replaceUsageEvents(ctx, exec, sess.ID); err != nil {
+				return 0, err
+			}
+			if err := insertMessages(ctx, exec, suffix); err != nil {
+				return 0, err
+			}
+			if err := insertToolCalls(ctx, exec, suffix); err != nil {
+				return 0, err
+			}
+			if err := insertToolResultEvents(ctx, exec, suffix); err != nil {
+				return 0, err
+			}
+			if err := s.replaceSessionSecretFindings(ctx, exec, sess.ID); err != nil {
+				return 0, err
+			}
+			if err := s.replaceSessionPinnedMessages(ctx, exec, sess.ID); err != nil {
+				return 0, err
+			}
+			return len(suffix), nil
+		case duckMessagePushReplace:
+		default:
+			return 0, fmt.Errorf("unknown duckdb message push action %d", action.kind)
+		}
+	}
+
+	if err := s.replaceSessionDependents(ctx, exec, sess.ID); err != nil {
+		return 0, err
+	}
+	if err := s.replaceUsageEvents(ctx, exec, sess.ID); err != nil {
+		return 0, err
 	}
 	if err := insertMessages(ctx, exec, msgs); err != nil {
 		return 0, err
@@ -270,42 +322,45 @@ func (s *Sync) replaceSessionDependents(
 func (s *Sync) deleteHardDeletedMirrorSessions(
 	ctx context.Context, tx *sql.Tx, localSessions []db.Session,
 	machine string, projects, excludeProjects []string,
-) ([]string, error) {
+) ([]string, map[string]bool, error) {
 	localIDs := make(map[string]bool, len(localSessions))
 	for _, sess := range localSessions {
 		localIDs[sess.ID] = true
 	}
+	mirrorIDs := make(map[string]bool)
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id, project FROM sessions WHERE machine = ?`,
 		machine,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("listing duckdb sessions for deletion reconciliation: %w", err)
+		return nil, nil, fmt.Errorf("listing duckdb sessions for deletion reconciliation: %w", err)
 	}
 	defer rows.Close()
 	var stale []string
 	for rows.Next() {
 		var id, project string
 		if err := rows.Scan(&id, &project); err != nil {
-			return nil, fmt.Errorf("scanning duckdb session for deletion reconciliation: %w", err)
+			return nil, nil, fmt.Errorf("scanning duckdb session for deletion reconciliation: %w", err)
 		}
+		mirrorIDs[id] = true
 		if !projectInSyncScope(project, projects, excludeProjects) {
 			continue
 		}
 		if !localIDs[id] {
 			stale = append(stale, id)
+			delete(mirrorIDs, id)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sort.Strings(stale)
 	for _, id := range stale {
 		if err := s.deleteMirrorSession(ctx, tx, id); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return stale, nil
+	return stale, mirrorIDs, nil
 }
 
 func (s *Sync) deleteMirrorSession(
@@ -1366,6 +1421,30 @@ func (s *Sync) replaceSecretFindings(
 	return nil
 }
 
+func (s *Sync) replaceSessionSecretFindings(
+	ctx context.Context, exec duckMutationExecutor, sessionID string,
+) error {
+	if err := s.execMutation(ctx, exec,
+		`DELETE FROM secret_findings WHERE session_id = ?`,
+		sessionID,
+	); err != nil {
+		return fmt.Errorf("clearing duckdb secret_findings for %s: %w", sessionID, err)
+	}
+	return s.replaceSecretFindings(ctx, exec, sessionID)
+}
+
+func (s *Sync) replaceSessionPinnedMessages(
+	ctx context.Context, exec duckMutationExecutor, sessionID string,
+) error {
+	if err := s.execMutation(ctx, exec,
+		`DELETE FROM pinned_messages WHERE session_id = ?`,
+		sessionID,
+	); err != nil {
+		return fmt.Errorf("clearing duckdb pinned_messages for %s: %w", sessionID, err)
+	}
+	return s.replacePinnedMessages(ctx, exec, sessionID)
+}
+
 func (s *Sync) replacePinnedMessages(
 	ctx context.Context, exec duckMutationExecutor, sessionID string,
 ) error {
@@ -1410,12 +1489,7 @@ func (s *Sync) replaceScopedPinnedMessages(
 	ctx context.Context, tx *sql.Tx, sessions []db.Session,
 ) error {
 	for _, sess := range sessions {
-		if err := s.execMutation(ctx, tx,
-			`DELETE FROM pinned_messages WHERE session_id = ?`, sess.ID,
-		); err != nil {
-			return fmt.Errorf("clearing duckdb pinned_messages for %s: %w", sess.ID, err)
-		}
-		if err := s.replacePinnedMessages(ctx, tx, sess.ID); err != nil {
+		if err := s.replaceSessionPinnedMessages(ctx, tx, sess.ID); err != nil {
 			return err
 		}
 	}
