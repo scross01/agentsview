@@ -220,6 +220,10 @@ piping structured output remains safe. The JSON `total` continues to describe
 the filtered result, not the excluded sessions. Use the `--include-*` flags to
 opt back in.
 
+Date filters match a session when its activity window overlaps the selected
+date or range. Sessions that start before midnight and remain active after it
+therefore appear on both dates.
+
 | Flag                  | HTTP param          | Notes                             |
 |-----------------------|---------------------|-----------------------------------|
 | `--project`           | `project`           | string                            |
