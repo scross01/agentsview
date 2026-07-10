@@ -1,3 +1,42 @@
+<script module lang="ts">
+  import type {
+    DisplayItem as PromptDisplayItem,
+  } from "./lib/utils/display-items.js";
+
+  export function findUserPromptOrdinal(
+    items: PromptDisplayItem[],
+    selected: number | null,
+    delta: number,
+    userVisible: boolean,
+  ): number | undefined {
+    if (!userVisible) return;
+
+    const isUserPrompt = (item: PromptDisplayItem) =>
+      item.kind === "message" &&
+      item.message.role === "user" &&
+      !item.message.is_system;
+    const selectedIndex = items.findIndex((item) =>
+      item.ordinals.includes(selected ?? -1),
+    );
+    if (selectedIndex < 0) {
+      const prompts = items.filter(isUserPrompt);
+      return (delta > 0 ? prompts[0] : prompts[prompts.length - 1])
+        ?.ordinals[0];
+    }
+
+    for (
+      let index = selectedIndex + delta;
+      index >= 0 && index < items.length;
+      index += delta
+    ) {
+      const item = items[index]!;
+      if (isUserPrompt(item)) {
+        return item.ordinals[0];
+      }
+    }
+  }
+</script>
+
 <script lang="ts">
   import { onMount, untrack } from "svelte";
   import AppHeader from "./lib/components/layout/AppHeader.svelte";
@@ -224,6 +263,19 @@
     navigateToMessageOrdinal(next.ordinals[0]!);
   }
 
+  function navigateUserPrompt(delta: number) {
+    const items = messageListRef?.getDisplayItems();
+    if (!items || items.length === 0) return;
+
+    const ordinal = findUserPromptOrdinal(
+      items,
+      ui.selectedOrdinal,
+      ui.sortNewestFirst ? -delta : delta,
+      ui.isBlockVisible("user"),
+    );
+    if (ordinal !== undefined) navigateToMessageOrdinal(ordinal);
+  }
+
   function navigateToMessageOrdinal(ordinal: number) {
     if (ui.followLatest) {
       ui.setFollowLatest(false);
@@ -400,7 +452,10 @@
     });
 
     window.addEventListener("show-about", showAbout);
-    const cleanup = registerShortcuts({ navigateMessage });
+    const cleanup = registerShortcuts({
+      navigateMessage,
+      navigateUserPrompt,
+    });
     return () => {
       healthCleanup();
       cleanup();
