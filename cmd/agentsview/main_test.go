@@ -5,8 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -23,6 +25,184 @@ import (
 	"go.kenn.io/agentsview/internal/server"
 	agentsync "go.kenn.io/agentsview/internal/sync"
 )
+
+func TestRuntimeWarningHelper(t *testing.T) {
+	logOutput := captureLogOutput(t)
+	var visible bytes.Buffer
+
+	reportRuntimeRecordWrite(
+		&visible, errors.New("permission denied"),
+		"keeping start lock as fallback",
+		"To fix permissions, run: icacls <dir> /setowner <user>",
+	)
+
+	assert.Contains(t, visible.String(), "could not write daemon runtime record")
+	assert.Contains(t, visible.String(), "icacls <dir> /setowner <user>")
+	assert.Contains(t, logOutput.String(), "could not write daemon runtime record")
+}
+
+func TestServeRuntimeRecordWriteFailureWarnsVisible(t *testing.T) {
+	out, err := runServeRuntimeWarningHelper(t, true)
+	require.NoError(t, err, string(out))
+	assert.Contains(t, string(out), "could not write daemon runtime record")
+	assert.Contains(t, string(out), "icacls <dir> /setowner <user>")
+}
+
+func TestServeRuntimeRecordWriteSuccessDoesNotWarnVisible(t *testing.T) {
+	out, err := runServeRuntimeWarningHelper(t, false)
+	require.NoError(t, err, string(out))
+	assert.Contains(t, string(out), "runtime record write reached")
+	assert.NotContains(t, string(out), "could not write daemon runtime record")
+}
+
+func TestPGServeRuntimeRecordWriteFailureWarnsVisible(t *testing.T) {
+	out, err := runPGRuntimeWarningHelper(t)
+	require.NoError(t, err, string(out))
+	assert.Contains(t, string(out), "could not write daemon runtime record")
+}
+
+func TestDuckDBServeRuntimeRecordWriteFailureWarnsVisible(t *testing.T) {
+	out, err := runDuckDBRuntimeWarningHelper(t)
+	require.NoError(t, err, string(out))
+	assert.Contains(t, string(out), "could not write daemon runtime record")
+}
+
+func runServeRuntimeWarningHelper(t *testing.T, failWrite bool) ([]byte, error) {
+	t.Helper()
+	dataDir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=TestRunServeRuntimeWarningHelperProcess")
+	cmd.Env = append(
+		os.Environ(),
+		"AGENTSVIEW_RUN_SERVE_RUNTIME_WARNING_HELPER=1",
+		"AGENTSVIEW_RUN_SERVE_RUNTIME_WARNING_FAIL="+fmt.Sprint(failWrite),
+		"AGENTSVIEW_DATA_DIR="+dataDir,
+	)
+	return cmd.CombinedOutput()
+}
+
+func TestRunServeRuntimeWarningHelperProcess(t *testing.T) {
+	if os.Getenv("AGENTSVIEW_RUN_SERVE_RUNTIME_WARNING_HELPER") != "1" {
+		return
+	}
+	if os.Getenv("AGENTSVIEW_RUN_SERVE_RUNTIME_WARNING_FAIL") == "true" {
+		writeDaemonRuntimeWithAuthAndNoSync = func(
+			string, string, int, string, bool, bool, bool, ...int,
+		) (string, error) {
+			return "", errors.New("forced runtime-record write failure")
+		}
+	} else {
+		original := writeDaemonRuntimeWithAuthAndNoSync
+		writeDaemonRuntimeWithAuthAndNoSync = func(
+			dataDir, host string, port int, version string, readOnly,
+			requireAuth, noSync bool, caddyPID ...int,
+		) (string, error) {
+			path, err := original(
+				dataDir, host, port, version, readOnly, requireAuth, noSync,
+				caddyPID...,
+			)
+			fmt.Println("runtime record write reached")
+			return path, err
+		}
+	}
+	go func() {
+		time.Sleep(time.Second)
+		os.Exit(0)
+	}()
+	runServe(config.Config{
+		Host:    "127.0.0.1",
+		Port:    0,
+		DataDir: os.Getenv("AGENTSVIEW_DATA_DIR"),
+		DBPath:  filepath.Join(os.Getenv("AGENTSVIEW_DATA_DIR"), "sessions.db"),
+		NoSync:  true,
+	}, serveOptions{})
+}
+
+func runDuckDBRuntimeWarningHelper(t *testing.T) ([]byte, error) {
+	t.Helper()
+	dataDir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=TestRunDuckDBRuntimeWarningHelperProcess")
+	cmd.Env = append(
+		os.Environ(),
+		"AGENTSVIEW_RUN_DUCKDB_RUNTIME_WARNING_HELPER=1",
+		"AGENTSVIEW_DATA_DIR="+dataDir,
+		"AGENTSVIEW_DUCKDB_RUNTIME_WARNING_PATH="+filepath.Join(dataDir, "mirror.duckdb"),
+	)
+	return cmd.CombinedOutput()
+}
+
+func runPGRuntimeWarningHelper(t *testing.T) ([]byte, error) {
+	t.Helper()
+	dataDir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=TestRunPGRuntimeWarningHelperProcess")
+	cmd.Env = append(
+		os.Environ(),
+		"AGENTSVIEW_RUN_PG_RUNTIME_WARNING_HELPER=1",
+		"AGENTSVIEW_DATA_DIR="+dataDir,
+	)
+	return cmd.CombinedOutput()
+}
+
+func TestRunPGRuntimeWarningHelperProcess(t *testing.T) {
+	if os.Getenv("AGENTSVIEW_RUN_PG_RUNTIME_WARNING_HELPER") != "1" {
+		return
+	}
+	writeDaemonRuntimeWithAuth = func(
+		string, string, int, string, bool, bool, ...int,
+	) (string, error) {
+		return "", errors.New("forced runtime-record write failure")
+	}
+	database := dbtest.OpenTestDBAt(
+		t, filepath.Join(os.Getenv("AGENTSVIEW_DATA_DIR"), "pg.db"),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	port := server.FindAvailablePort("127.0.0.1", 0)
+	appCfg := config.Config{
+		Host:    "127.0.0.1",
+		Port:    port,
+		DataDir: os.Getenv("AGENTSVIEW_DATA_DIR"),
+	}
+	preparePGServe = func(config.Config, string) (pgServeStartup, error) {
+		return pgServeStartup{
+			cfg: appCfg, ctx: ctx,
+			rtOpts: serveRuntimeOptions{
+				Mode: "pg-serve", RequestedPort: appCfg.Port,
+			},
+			srv: server.New(
+				appCfg, database, nil,
+				server.WithBaseContext(ctx),
+			),
+			cleanup: func() { cancel(); _ = database.Close() },
+		}, nil
+	}
+	go func() {
+		time.Sleep(time.Second)
+		os.Exit(0)
+	}()
+	runPGServe(appCfg, "")
+}
+
+func TestRunDuckDBRuntimeWarningHelperProcess(t *testing.T) {
+	if os.Getenv("AGENTSVIEW_RUN_DUCKDB_RUNTIME_WARNING_HELPER") != "1" {
+		return
+	}
+	writeDaemonRuntimeWithAuth = func(
+		string, string, int, string, bool, bool, ...int,
+	) (string, error) {
+		return "", errors.New("forced runtime-record write failure")
+	}
+	go func() {
+		time.Sleep(3 * time.Second)
+		os.Exit(0)
+	}()
+	runDuckDBServe(config.Config{
+		Host:    "127.0.0.1",
+		Port:    0,
+		DataDir: os.Getenv("AGENTSVIEW_DATA_DIR"),
+		DuckDB: config.DuckDBConfig{
+			Path: os.Getenv("AGENTSVIEW_DUCKDB_RUNTIME_WARNING_PATH"),
+		},
+	}, "")
+}
 
 func TestMustLoadConfig(t *testing.T) {
 	tests := []struct {

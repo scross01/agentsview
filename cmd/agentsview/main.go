@@ -318,15 +318,14 @@ func runServe(cfg config.Config, opts serveOptions) {
 	// write fails, keep the start lock as a fallback "server
 	// is active" marker so token-use doesn't start a competing
 	// on-demand sync against our live DB.
-	if _, sfErr := WriteDaemonRuntimeWithAuthAndNoSync(
+	if _, sfErr := writeDaemonRuntimeWithAuthAndNoSync(
 		rt.Cfg.DataDir, rt.Cfg.Host, rt.Cfg.Port, version, false,
 		rt.Cfg.RequireAuth, rt.Cfg.NoSync,
 		rt.Caddy.Pid(),
 	); sfErr != nil {
-		log.Printf(
-			"warning: could not write daemon runtime record: %v"+
-				" (keeping start lock as fallback)",
-			sfErr,
+		reportRuntimeRecordWrite(
+			os.Stdout, sfErr, "keeping start lock as fallback",
+			"To fix permissions, run: icacls <dir> /setowner <user>",
 		)
 	} else {
 		runtimeRecordDataDir = rt.Cfg.DataDir
