@@ -7,6 +7,7 @@
   import { m } from "../../i18n/index.js";
   import AppearanceSettings from "./AppearanceSettings.svelte";
   import AgentDirSettings from "./AgentDirSettings.svelte";
+  import DateRangeSettings from "./DateRangeSettings.svelte";
   import TerminalSettings from "./TerminalSettings.svelte";
   import EmbeddingsSettings from "./EmbeddingsSettings.svelte";
   import GithubSettings from "./GithubSettings.svelte";
@@ -90,6 +91,7 @@
     <div class="settings-sections">
       <LanguageSettings />
       <AppearanceSettings />
+      <DateRangeSettings />
       <AgentDirSettings />
       <TerminalSettings />
       <WorktreeMappingSettings readOnly={settings.readOnly} />
