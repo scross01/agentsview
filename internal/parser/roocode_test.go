@@ -685,7 +685,8 @@ func TestParseRooCodeSessionWithCommandAsk(t *testing.T) {
 	assert.True(t, msgs[1].HasToolUse)
 	require.Len(t, msgs[1].ToolCalls, 1)
 	assert.Equal(t, "execute_command", msgs[1].ToolCalls[0].ToolName)
-	assert.Equal(t, "npm test", msgs[1].ToolCalls[0].InputJSON)
+	assert.Equal(t, "Bash", msgs[1].ToolCalls[0].Category)
+	assert.Equal(t, `{"command":"npm test"}`, msgs[1].ToolCalls[0].InputJSON)
 }
 
 func TestParseRooCodeSessionReasoningSay(t *testing.T) {
@@ -1689,6 +1690,10 @@ func TestParseRooCodeSessionCommandOutputError(t *testing.T) {
 	// Error output should set status to "errored".
 	require.Len(t, msgs[1].ToolCalls, 1)
 	tc := msgs[1].ToolCalls[0]
+	assert.Equal(t, "Bash", tc.Category,
+		"execute_command should be categorized as Bash")
+	assert.Equal(t, `{"command":"npm test"}`, tc.InputJSON,
+		"command should be encoded as JSON")
 	require.Len(t, tc.ResultEvents, 1)
 	assert.Equal(t, "errored", tc.ResultEvents[0].Status)
 	assert.Contains(t, tc.ResultEvents[0].Content, "exit code 1")

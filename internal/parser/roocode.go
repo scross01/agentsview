@@ -654,15 +654,22 @@ func classifyRooCodeMessage(
 		}
 		return RoleAssistant, []ParsedToolCall{*tc}, nil
 	case "command":
-		// Assistant invokes a shell command.
+		// Assistant invokes a shell command. Encode as JSON
+		// to satisfy the frontend's structured-InputJSON contract.
 		cmdText := strings.TrimSpace(msg.Text)
 		if cmdText == "" {
+			return RoleAssistant, nil, nil
+		}
+		inputMap := map[string]string{"command": cmdText}
+		inputJSON, err := json.Marshal(inputMap)
+		if err != nil {
 			return RoleAssistant, nil, nil
 		}
 		return RoleAssistant, []ParsedToolCall{{
 			ToolUseID: "roocode:execute_command",
 			ToolName:  "execute_command",
-			InputJSON: cmdText,
+			Category:  "Bash",
+			InputJSON: string(inputJSON),
 		}}, nil
 	case "completion_result":
 		return RoleAssistant, nil, nil
@@ -938,6 +945,7 @@ func parseRooCodeToolCall(text string) *ParsedToolCall {
 	tc := &ParsedToolCall{
 		ToolUseID: toolUseID,
 		ToolName:  toolName,
+		Category:  NormalizeToolCategory(toolName),
 		InputJSON: string(inputJSON),
 	}
 	// Extract skill name for skill tool calls, matching the
