@@ -1,4 +1,4 @@
-// ABOUTME: Parses RooCode (RooVeterinaryInc.roo-cline) VSCode extension
+// ABOUTME: Parses RooCode (rooveterinaryinc.roo-cline) VSCode extension
 // ABOUTME: session files from the tasks/ directory under VSCode globalStorage.
 // ABOUTME: Each session is a task directory with history_item.json (metadata)
 // ABOUTME: and ui_messages.json (ClineMessage[] transcript). The parser extracts
@@ -992,7 +992,7 @@ func parseRooCodeToolCall(text string, ordinal int) *ParsedToolCall {
 }
 
 // discoverRooCodeSessions finds all task directories under a RooCode root.
-// root is the globalStorage directory (e.g. ~/Library/.../RooVeterinaryInc.roo-cline).
+// root is the globalStorage directory (e.g. ~/Library/.../rooveterinaryinc.roo-cline).
 // Sessions live under <root>/tasks/<taskId>/.
 func discoverRooCodeSessions(root string) []rooCodeSessionDir {
 	tasksDir := filepath.Join(root, "tasks")

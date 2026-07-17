@@ -714,22 +714,25 @@ var Registry = []AgentDef{
 		WatchRootsFunc: ResolveIcodemateWatchRoots,
 	},
 	{
-		// RooCode (RooVeterinaryInc.roo-cline) is a VSCode extension that
+		// RooCode (rooveterinaryinc.roo-cline) is a VSCode extension that
 		// stores sessions in VSCode's globalStorage directory under
 		// tasks/<taskId>/. Each task directory holds history_item.json
-		// (metadata) and ui_messages.json (transcript). RooCode was shut
-		// down on May 15, 2026; ZooCode is the active community fork.
+		// (metadata) and ui_messages.json (transcript). VSCode
+		// canonicalizes globalStorage directory names to lowercase, so
+		// the default paths must use the lowercase extension ID to be
+		// discoverable on case-sensitive Linux filesystems. RooCode was
+		// shut down on May 15, 2026; ZooCode is the active community fork.
 		Type:        AgentRooCode,
 		DisplayName: "RooCode",
 		EnvVar:      "ROOCODE_DIR",
 		ConfigKey:   "roocode_dirs",
 		DefaultDirs: []string{
 			// macOS
-			"Library/Application Support/Code/User/globalStorage/RooVeterinaryInc.roo-cline",
+			"Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline",
 			// Linux
-			".config/Code/User/globalStorage/RooVeterinaryInc.roo-cline",
+			".config/Code/User/globalStorage/rooveterinaryinc.roo-cline",
 			// Windows
-			"AppData/Roaming/Code/User/globalStorage/RooVeterinaryInc.roo-cline",
+			"AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline",
 		},
 		IDPrefix:  "roocode:",
 		FileBased: true,

@@ -424,11 +424,11 @@ names and per-request token usage.
 **RooCode default directories** vary by platform:
 
 - **macOS:**
-  `~/Library/Application Support/Code/User/globalStorage/RooVeterinaryInc.roo-cline/`
-- **Linux:** `~/.config/Code/User/globalStorage/RooVeterinaryInc.roo-cline/`
-- **Windows:** `~/AppData/Roaming/Code/User/globalStorage/RooVeterinaryInc.roo-cline/`
+  `~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/`
+- **Linux:** `~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/`
+- **Windows:** `~/AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/`
 
-RooCode (RooVeterinaryInc.roo-cline) is a VSCode extension that stores
+RooCode (rooveterinaryinc.roo-cline) is a VSCode extension that stores
 sessions under `tasks/<taskId>/` in VSCode's globalStorage directory. Each task
 directory contains `history_item.json` (metadata including task description,
 model name, workspace path, token counts, and recorded cost) and
