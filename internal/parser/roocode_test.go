@@ -2027,6 +2027,105 @@ func TestParseRooCodeSessionFileToolResult(t *testing.T) {
 	require.Len(t, tc.ResultEvents, 1)
 	assert.Equal(t, "completed", tc.ResultEvents[0].Status)
 	assert.Equal(t, "package main\nfunc main() {}", tc.ResultEvents[0].Content)
+	// The result-only "content" field must not be retained in InputJSON.
+	assert.NotContains(t, tc.InputJSON, "package main",
+		"readFile content is a result and must be stripped from InputJSON")
+	assert.NotContains(t, tc.InputJSON, `"content"`,
+		"readFile content key must be stripped from InputJSON")
+	assert.Contains(t, tc.InputJSON, `"path"`,
+		"readFile path is an argument and must remain in InputJSON")
+}
+
+func TestParseRooCodeSessionResultBearingReadToolsComplete(t *testing.T) {
+	tests := []struct {
+		name       string
+		toolName   string
+		payload    string
+		wantResult string
+	}{
+		{
+			name:     "listFiles",
+			toolName: "listFiles",
+			payload: `{"tool":"listFiles","path":"src",` +
+				`"content":"src/a.go\nsrc/b.go"}`,
+			wantResult: "src/a.go\nsrc/b.go",
+		},
+		{
+			name:     "searchFiles",
+			toolName: "searchFiles",
+			payload: `{"tool":"searchFiles","path":"src","regex":"func",` +
+				`"content":"src/a.go:1: func main()"}`,
+			wantResult: "src/a.go:1: func main()",
+		},
+		{
+			name:     "listCodeDefinitionNames",
+			toolName: "listCodeDefinitionNames",
+			payload: `{"tool":"listCodeDefinitionNames","path":"src",` +
+				`"content":"main\nhelper"}`,
+			wantResult: "main\nhelper",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			taskDir := filepath.Join(tmpDir, "tasks", "test-"+tt.name)
+			require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+			historyItem := rooCodeHistoryItem{
+				ID:        "test-" + tt.name,
+				Number:    1,
+				Timestamp: 1688836851000,
+				Task:      tt.name + " result test",
+				Workspace: "/Users/test/project",
+			}
+			historyJSON, err := json.Marshal(historyItem)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(
+				filepath.Join(taskDir, "history_item.json"),
+				historyJSON, 0644,
+			))
+
+			messages := []rooCodeMessage{
+				{
+					Timestamp: 1688836851000,
+					Type:      "say",
+					Say:       "text",
+					Text:      "Do it",
+				},
+				{
+					Timestamp: 1688836860000,
+					Type:      "ask",
+					Ask:       "tool",
+					Text:      tt.payload,
+				},
+			}
+			messagesJSON, err := json.Marshal(messages)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(
+				filepath.Join(taskDir, "ui_messages.json"),
+				messagesJSON, 0644,
+			))
+
+			_, msgs, err := parseRooCodeSession(taskDir, "", "")
+			require.NoError(t, err)
+
+			require.Len(t, msgs[1].ToolCalls, 1)
+			tc := msgs[1].ToolCalls[0]
+			assert.Equal(t, tt.toolName, tc.ToolName)
+			require.Len(t, tc.ResultEvents, 1,
+				"result-bearing read tool must emit a completed result event")
+			assert.Equal(t, "completed", tc.ResultEvents[0].Status)
+			assert.Equal(t, tt.wantResult, tc.ResultEvents[0].Content)
+			// Result content stripped from InputJSON; args retained.
+			assert.NotContains(t, tc.InputJSON, `"content"`,
+				"result content key must be stripped from InputJSON")
+			assert.NotContains(t, tc.InputJSON, tt.wantResult,
+				"result content value must be stripped from InputJSON")
+			assert.Contains(t, tc.InputJSON, `"path"`,
+				"path argument must remain in InputJSON")
+		})
+	}
 }
 
 func TestParseRooCodeSessionWriteToolContentNotResult(t *testing.T) {
@@ -2080,6 +2179,11 @@ func TestParseRooCodeSessionWriteToolContentNotResult(t *testing.T) {
 	assert.Equal(t, "writeToFile", tc.ToolName)
 	assert.Empty(t, tc.ResultEvents,
 		"writeToFile content should not be treated as a completed result")
+	// writeToFile "content" is an input argument and must be preserved.
+	assert.Contains(t, tc.InputJSON, `"content"`,
+		"writeToFile content is an input and must remain in InputJSON")
+	assert.Contains(t, tc.InputJSON, "package main",
+		"writeToFile content value must remain in InputJSON")
 }
 
 func TestParseRooCodeSessionNewTaskContentNotResult(t *testing.T) {

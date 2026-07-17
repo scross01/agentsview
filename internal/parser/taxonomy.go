@@ -229,7 +229,9 @@ func NormalizeToolCategory(rawName string) string {
 		return "Edit"
 	case "appliedDiff":
 		return "Edit"
-	case "listFiles":
+	case "listFiles", "listFilesTopLevel", "listFilesRecursive":
+		return "Read"
+	case "listCodeDefinitionNames":
 		return "Read"
 	case "searchFiles":
 		return "Grep"

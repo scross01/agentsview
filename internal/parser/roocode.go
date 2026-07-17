@@ -869,20 +869,35 @@ func rooPairErrorToPendingTool(
 	return false
 }
 
-// rooToolResultContent extracts the embedded result content from
-// a tool's JSON payload. Only tools whose schemas define "content"
-// as result data are included; write/edit tools use "content" as
-// input and must not be treated as completed results.
+// rooResultBearingReadTools maps (lowercased) tool names whose
+// payloads carry execution results in the "content" field to the set
+// of payload keys that are result-only and must be stripped from
+// InputJSON. These are read-family tools where "content" is the tool
+// output (file contents, directory listing, search hits), not an
+// argument. Write/edit tools (writeToFile, insertContent, appliedDiff,
+// searchAndReplace) deliberately omit "content" here because their
+// "content"/"diff" fields are inputs, not results.
+var rooResultBearingReadTools = map[string][]string{
+	"readfile":                {"content"},
+	"listfiles":               {"content"},
+	"listfilestoplevel":       {"content"},
+	"listfilesrecursive":      {"content"},
+	"listcodedefinitionnames": {"content"},
+	"searchfiles":             {"content"},
+}
+
+// rooToolResultContent extracts the embedded result content from a
+// tool's JSON payload. Only read-family tools whose schemas define
+// "content" as result data are included; write/edit tools use
+// "content"/"diff" as input and must not be treated as completed
+// results.
 //
 // It returns (content, present). present is true when the tool is a
 // result-content tool and the JSON carries an explicit "content" key
 // (even if that value is the empty string), so an empty-but-present
 // result still completes the tool call instead of leaving it pending.
 func rooToolResultContent(toolName, text string) (string, bool) {
-	switch strings.ToLower(toolName) {
-	case "readfile":
-		// readFile returns file contents in the "content" field.
-	default:
+	if _, ok := rooResultBearingReadTools[strings.ToLower(toolName)]; !ok {
 		return "", false
 	}
 	text = strings.TrimSpace(text)
@@ -960,6 +975,15 @@ func parseRooCodeToolCall(text string, ordinal int) *ParsedToolCall {
 	toolName, _ := toolData["tool"].(string)
 	if toolName == "" {
 		return nil
+	}
+
+	// Strip result-only fields from the payload before building
+	// InputJSON. Roo tool payloads combine arguments and results in a
+	// single object; for read-family tools the "content" field is the
+	// tool output, not an argument, and must not be retained as input
+	// (it can hold large file contents that result storage blocks).
+	for _, field := range rooResultBearingReadTools[strings.ToLower(toolName)] {
+		delete(toolData, field)
 	}
 
 	// Re-marshal to get canonical JSON for InputJSON.
