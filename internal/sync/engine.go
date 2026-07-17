@@ -9157,7 +9157,18 @@ func providerSourcePathNeedsFingerprint(path string) bool {
 }
 
 func providerSourceMtimeNeedsFingerprint(agent parser.AgentType) bool {
-	return agent == parser.AgentQoder
+	switch agent {
+	case parser.AgentQoder:
+		// Qoder stores a sidecar whose mtime the plain path stat misses.
+		return true
+	case parser.AgentRooCode:
+		// RooCode freshness spans history_item.json and ui_messages.json.
+		// The stored path is history_item.json, so a plain stat misses
+		// ui_messages.json updates; the provider fingerprint composes both.
+		return true
+	default:
+		return false
+	}
 }
 
 // providerSessionIsFork reports whether the session ID addresses a fork child
