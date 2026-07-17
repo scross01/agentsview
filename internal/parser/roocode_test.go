@@ -728,6 +728,118 @@ func TestParseRooCodeSessionCommandOutput(t *testing.T) {
 		msgs[1].ToolResults[0].ContentRaw)
 }
 
+func TestParseRooCodeSessionEmptyCommandOutputCompletes(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-emptycmd")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-emptycmd",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Empty command output test",
+		Workspace: "/Users/test/project",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Run command",
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "ask",
+			Ask:       "command",
+			Text:      "true",
+		},
+		{
+			Timestamp: 1688836870000,
+			Type:      "say",
+			Say:       "command_output",
+			Text:      "",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	_, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	// The execute_command tool call must pair with the empty
+	// command_output and be marked completed (not left pending).
+	require.Len(t, msgs, 2)
+	assert.Equal(t, RoleAssistant, msgs[1].Role)
+	require.Len(t, msgs[1].ToolCalls, 1)
+	require.Len(t, msgs[1].ToolCalls[0].ResultEvents, 1)
+	assert.Equal(t, "completed", msgs[1].ToolCalls[0].ResultEvents[0].Status)
+	assert.Equal(t, "", msgs[1].ToolCalls[0].ResultEvents[0].Content)
+}
+
+func TestParseRooCodeSessionEmptyReadFileResult(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-emptyread")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-emptyread",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Empty readFile result test",
+		Workspace: "/Users/test/project",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Read empty file",
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "ask",
+			Ask:       "tool",
+			Text:      `{"tool":"readFile","path":"src/empty.go","isOutsideWorkspace":false,"content":""}`,
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	_, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	// readFile with an explicit empty "content" must still produce a
+	// completed result event rather than leaving the call pending.
+	require.Len(t, msgs, 2)
+	assert.Equal(t, RoleAssistant, msgs[1].Role)
+	require.Len(t, msgs[1].ToolCalls, 1)
+	require.Len(t, msgs[1].ToolCalls[0].ResultEvents, 1)
+	assert.Equal(t, "completed", msgs[1].ToolCalls[0].ResultEvents[0].Status)
+	assert.Equal(t, "", msgs[1].ToolCalls[0].ResultEvents[0].Content)
+}
+
 func TestParseRooCodeSessionWithCommandAsk(t *testing.T) {
 	tmpDir := t.TempDir()
 	taskDir := filepath.Join(tmpDir, "tasks", "test-task-askcmd")

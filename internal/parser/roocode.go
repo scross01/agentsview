@@ -589,14 +589,14 @@ func classifyRooCodeMessage(
 	case "command_output":
 		// Command/tool execution result. parseRooCodeMessages
 		// pairs this with the preceding execute_command tool call
-		// by returning the output as a ParsedToolResult.
-		content := strings.TrimSpace(msg.Text)
-		if content == "" {
-			return RoleUser, nil, nil
-		}
+		// by returning the output as a ParsedToolResult. Always
+		// return a result (even when empty) so an empty-but-present
+		// output still completes the call instead of leaving it
+		// pending.
+		output := strings.TrimSpace(msg.Text)
 		return RoleUser, nil, []ParsedToolResult{{
-			ContentLength: len(content),
-			ContentRaw:    content,
+			ContentLength: len(output),
+			ContentRaw:    output,
 		}}
 	case "completion_result":
 		return RoleAssistant, nil, nil
@@ -636,9 +636,9 @@ func classifyRooCodeMessage(
 		// Extract embedded result content for tools whose schemas
 		// define "content" as result data (e.g. readFile). Write/
 		// edit tools use "content" as input and are excluded.
-		if resultContent := rooToolResultContent(
+		if resultContent, present := rooToolResultContent(
 			tc.ToolName, msg.Text,
-		); resultContent != "" {
+		); present {
 			tc.ResultEvents = append(tc.ResultEvents,
 				ParsedToolResultEvent{
 					Status:  "completed",
@@ -854,23 +854,31 @@ func rooPairErrorToPendingTool(
 // a tool's JSON payload. Only tools whose schemas define "content"
 // as result data are included; write/edit tools use "content" as
 // input and must not be treated as completed results.
-func rooToolResultContent(toolName, text string) string {
+//
+// It returns (content, present). present is true when the tool is a
+// result-content tool and the JSON carries an explicit "content" key
+// (even if that value is the empty string), so an empty-but-present
+// result still completes the tool call instead of leaving it pending.
+func rooToolResultContent(toolName, text string) (string, bool) {
 	switch strings.ToLower(toolName) {
 	case "readfile":
 		// readFile returns file contents in the "content" field.
 	default:
-		return ""
+		return "", false
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return ""
+		return "", false
 	}
 	var toolData map[string]any
 	if err := json.Unmarshal([]byte(text), &toolData); err != nil {
-		return ""
+		return "", false
 	}
-	content, _ := toolData["content"].(string)
-	return content
+	content, ok := toolData["content"].(string)
+	if !ok {
+		return "", false
+	}
+	return content, true
 }
 
 // rooCommandOutputIsError detects error patterns in command output
