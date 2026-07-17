@@ -1948,6 +1948,119 @@ func TestParseRooCodeSessionErrorTypes(t *testing.T) {
 	assert.Equal(t, RoleAssistant, msgs[5].Role)
 }
 
+func TestParseRooCodeSessionUserFeedbackIsUserRole(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-feedback")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-feedback",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Feedback test",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Initial task",
+		},
+		{
+			Timestamp: 1688836852000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Working on it.",
+		},
+		{
+			Timestamp: 1688836853000,
+			Type:      "say",
+			Say:       "user_feedback",
+			Text:      "Please also handle edge cases",
+		},
+		{
+			Timestamp: 1688836854000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Done with edge cases.",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	sess, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	assert.Equal(t, 4, sess.MessageCount)
+	// user_feedback should be classified as user, not system.
+	assert.Equal(t, RoleUser, msgs[2].Role,
+		"user_feedback should be a user message")
+	assert.False(t, msgs[2].IsSystem,
+		"user_feedback should not be marked as system")
+	assert.Equal(t, "Please also handle edge cases", msgs[2].Content)
+}
+
+func TestParseRooCodeSessionCompletionResultAskIsAssistant(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-completion-ask")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-completion-ask",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Completion ask test",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Initial task",
+		},
+		{
+			Timestamp: 1688836852000,
+			Type:      "ask",
+			Ask:       "completion_result",
+			Text:      "Task completed successfully.",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	sess, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, sess.MessageCount)
+	// ask=completion_result should be assistant, not system.
+	assert.Equal(t, RoleAssistant, msgs[1].Role,
+		"completion_result ask should be an assistant message")
+	assert.False(t, msgs[1].IsSystem,
+		"completion_result ask should not be marked as system")
+}
+
 func TestParseRooCodeSessionErrorSayTypePairing(t *testing.T) {
 	tmpDir := t.TempDir()
 	taskDir := filepath.Join(tmpDir, "tasks", "test-task-errsay")

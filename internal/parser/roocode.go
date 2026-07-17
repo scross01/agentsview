@@ -605,7 +605,7 @@ func classifyRooCodeMessage(
 		return RoleSystem, nil, nil
 	case "user_feedback", "user_feedback_diff":
 		// User feedback on the assistant's work.
-		return RoleSystem, nil, nil
+		return RoleUser, nil, nil
 	case "error", "diff_error", "rooignore_error",
 		"shell_integration_warning":
 		// Error and warning messages. Treat as system.
@@ -665,7 +665,7 @@ func classifyRooCodeMessage(
 			InputJSON: cmdText,
 		}}, nil
 	case "completion_result":
-		return RoleSystem, nil, nil
+		return RoleAssistant, nil, nil
 	case "use_mcp_server":
 		// Assistant invokes an MCP server tool. The text field
 		// carries JSON with server name and tool details.
