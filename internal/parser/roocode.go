@@ -346,7 +346,7 @@ func parseRooCodeMessages(path string, model string) ([]ParsedMessage, int, erro
 
 		// Determine role and extract tool calls / tool results.
 		role, toolCalls, toolResults := classifyRooCodeMessage(
-			msg, isFirst,
+			msg, isFirst, ordinal,
 		)
 		isFirst = false
 
@@ -567,7 +567,7 @@ func parseRooCodeMessages(path string, model string) ([]ParsedMessage, int, erro
 // for a single RooCode message. The isFirst flag is true only for the very
 // first message in the transcript, which carries the user's initial task.
 func classifyRooCodeMessage(
-	msg rooCodeMessage, isFirst bool,
+	msg rooCodeMessage, isFirst bool, ordinal int,
 ) (RoleType, []ParsedToolCall, []ParsedToolResult) {
 	say := msg.Say
 	ask := msg.Ask
@@ -629,7 +629,7 @@ func classifyRooCodeMessage(
 		// payload with tool name, path, etc. For file tools
 		// (readFile, appliedDiff, etc.), the result content is
 		// embedded in the payload's "content" field.
-		tc := parseRooCodeToolCall(msg.Text)
+		tc := parseRooCodeToolCall(msg.Text, ordinal)
 		if tc == nil {
 			return RoleAssistant, nil, nil
 		}
@@ -666,7 +666,7 @@ func classifyRooCodeMessage(
 			return RoleAssistant, nil, nil
 		}
 		return RoleAssistant, []ParsedToolCall{{
-			ToolUseID: "roocode:execute_command",
+			ToolUseID: fmt.Sprintf("roocode:execute_command:%d", ordinal),
 			ToolName:  "execute_command",
 			Category:  "Bash",
 			InputJSON: string(inputJSON),
@@ -676,7 +676,7 @@ func classifyRooCodeMessage(
 	case "use_mcp_server":
 		// Assistant invokes an MCP server tool. The text field
 		// carries JSON with server name and tool details.
-		tc := parseRooCodeToolCall(msg.Text)
+		tc := parseRooCodeToolCall(msg.Text, ordinal)
 		if tc == nil {
 			return RoleAssistant, nil, nil
 		}
@@ -919,7 +919,7 @@ func rooCommandOutputIsError(output string) bool {
 // parseRooCodeToolCall extracts a ParsedToolCall from the JSON text of
 // an ask="tool" message. The text field contains a JSON object like:
 // {"tool":"readFile","path":"src/foo.ts","isOutsideWorkspace":false,...}
-func parseRooCodeToolCall(text string) *ParsedToolCall {
+func parseRooCodeToolCall(text string, ordinal int) *ParsedToolCall {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
@@ -941,7 +941,7 @@ func parseRooCodeToolCall(text string) *ParsedToolCall {
 		return nil
 	}
 
-	toolUseID := "roocode:" + toolName
+	toolUseID := fmt.Sprintf("roocode:%s:%d", toolName, ordinal)
 	tc := &ParsedToolCall{
 		ToolUseID: toolUseID,
 		ToolName:  toolName,

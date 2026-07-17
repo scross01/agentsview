@@ -570,6 +570,103 @@ func TestParseRooCodeSessionToolCalls(t *testing.T) {
 	assert.Equal(t, "anthropic/claude-sonnet-4", msgs[2].Model)
 }
 
+func TestParseRooCodeSessionRepeatedToolUseIDsUnique(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-repeat")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:            "test-task-repeat",
+		Number:        1,
+		Timestamp:     1688836851000,
+		Task:          "Repeated tool test",
+		TokensIn:      100,
+		TokensOut:     200,
+		TotalCost:     0.01,
+		Workspace:     "/Users/test/project",
+		APIConfigName: "anthropic/claude-sonnet-4",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	// Repeated readFile calls interleaved with other tools. Each
+	// duplicated tool name must receive a distinct, ordinal-based ID.
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Read both files.",
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "ask",
+			Ask:       "tool",
+			Text:      `{"tool":"readFile","path":"src/a.go","isOutsideWorkspace":false}`,
+		},
+		{
+			Timestamp: 1688836870000,
+			Type:      "ask",
+			Ask:       "tool",
+			Text:      `{"tool":"readFile","path":"src/b.go","isOutsideWorkspace":false}`,
+		},
+		{
+			Timestamp: 1688836880000,
+			Type:      "ask",
+			Ask:       "tool",
+			Text:      `{"tool":"appliedDiff","path":"src/a.go","diff":"...","isOutsideWorkspace":false}`,
+		},
+		{
+			Timestamp: 1688836890000,
+			Type:      "ask",
+			Ask:       "command",
+			Text:      "echo done",
+		},
+		{
+			Timestamp: 1688836900000,
+			Type:      "ask",
+			Ask:       "tool",
+			Text:      `{"tool":"readFile","path":"src/c.go","isOutsideWorkspace":false}`,
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	_, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	var toolCallMsgs []ParsedMessage
+	for _, m := range msgs {
+		if m.HasToolUse {
+			toolCallMsgs = append(toolCallMsgs, m)
+		}
+	}
+	require.Len(t, toolCallMsgs, 5)
+
+	ids := make([]string, 0, len(toolCallMsgs))
+	for _, m := range toolCallMsgs {
+		require.Len(t, m.ToolCalls, 1)
+		ids = append(ids, m.ToolCalls[0].ToolUseID)
+	}
+
+	// All generated IDs must be unique (no conflation across calls).
+	assert.ElementsMatch(t, []string{
+		"roocode:readFile:1",
+		"roocode:readFile:2",
+		"roocode:appliedDiff:3",
+		"roocode:execute_command:4",
+		"roocode:readFile:5",
+	}, ids)
+}
+
 func TestParseRooCodeSessionCommandOutput(t *testing.T) {
 	tmpDir := t.TempDir()
 	taskDir := filepath.Join(tmpDir, "tasks", "test-task-cmd")
