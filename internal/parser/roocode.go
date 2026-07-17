@@ -331,11 +331,11 @@ func parseRooCodeMessages(path string, model string) ([]ParsedMessage, int, erro
 			if msg.Say == "api_req_started" && msg.Text != "" {
 				var reqData map[string]any
 				if json.Unmarshal([]byte(msg.Text), &reqData) == nil {
-					if ti, ok := reqData["tokensIn"]; ok {
-						if v, ok := ti.(float64); ok &&
-							int(v) > peakCtx {
-							peakCtx = int(v)
-						}
+					ctx := floatInt(reqData["tokensIn"]) +
+						floatInt(reqData["cacheReads"]) +
+						floatInt(reqData["cacheWrites"])
+					if ctx > peakCtx {
+						peakCtx = ctx
 					}
 				}
 			}
@@ -741,6 +741,15 @@ func rooLastMessageIsThinkingOnly(messages []ParsedMessage) bool {
 		return IsThinkingOnlyContent(m.Content)
 	}
 	return false
+}
+
+// floatInt extracts a float64-as-int from a JSON-decoded map value,
+// returning 0 when the value is absent or not a number.
+func floatInt(v any) int {
+	if f, ok := v.(float64); ok {
+		return int(f)
+	}
+	return 0
 }
 
 // rooCodeIsMetadataSay reports whether the say type is internal metadata

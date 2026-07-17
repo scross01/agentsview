@@ -1455,10 +1455,11 @@ func TestParseRooCodeSessionPeakContextFromApiReqStarted(t *testing.T) {
 	sess, _, err := parseRooCodeSession(taskDir, "", "")
 	require.NoError(t, err)
 
-	// PeakContextTokens should be the max of api_req_started tokensIn,
-	// NOT the cumulative history_item tokensIn.
-	assert.Equal(t, 79569, sess.PeakContextTokens,
-		"peak context should come from api_req_started, not history_item")
+	// PeakContextTokens should be the max of tokensIn + cacheReads
+	// across api_req_started entries, NOT the cumulative history_item
+	// tokensIn. The three entries sum to 22997, 98000, 157569.
+	assert.Equal(t, 157569, sess.PeakContextTokens,
+		"peak context should be tokensIn + cacheReads from api_req_started")
 	assert.True(t, sess.HasPeakContextTokens)
 
 	// Cumulative tokensIn still goes to usage event for cost.
@@ -1510,6 +1511,56 @@ func TestParseRooCodeSessionPeakContextNoApiReqs(t *testing.T) {
 	// No api_req_started = no peak context data available.
 	assert.Equal(t, 0, sess.PeakContextTokens)
 	assert.False(t, sess.HasPeakContextTokens)
+}
+
+func TestParseRooCodeSessionPeakContextIncludesCacheWrites(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-cachewrites")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-cachewrites",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Cache writes test",
+		TokensIn:  1000,
+		TokensOut: 500,
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Cache writes test",
+		},
+		{
+			Timestamp: 1688836852000,
+			Type:      "say",
+			Say:       "api_req_started",
+			Text:      `{"tokensIn":5000,"cacheReads":3000,"cacheWrites":2000,"tokensOut":100}`,
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	sess, _, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	// Peak context = tokensIn + cacheReads + cacheWrites = 5000 + 3000 + 2000.
+	assert.Equal(t, 10000, sess.PeakContextTokens,
+		"peak context should include cache reads and writes")
+	assert.True(t, sess.HasPeakContextTokens)
 }
 
 func TestParseRooCodeSessionCommandOutputPairing(t *testing.T) {
