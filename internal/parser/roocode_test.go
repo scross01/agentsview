@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -785,6 +786,72 @@ func TestParseRooCodeSessionEmptyCommandOutputCompletes(t *testing.T) {
 	require.Len(t, msgs[1].ToolCalls[0].ResultEvents, 1)
 	assert.Equal(t, "completed", msgs[1].ToolCalls[0].ResultEvents[0].Status)
 	assert.Equal(t, "", msgs[1].ToolCalls[0].ResultEvents[0].Content)
+}
+
+func TestParseRooCodeSessionResultTimestampExtendsEndedAt(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-rests")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-rests",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Result timestamp test",
+		Workspace: "/Users/test/project",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	const toolTs = 1688836860000
+	const resultTs = 1688836900000
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Run the command",
+		},
+		{
+			Timestamp: toolTs,
+			Type:      "ask",
+			Ask:       "command",
+			Text:      "echo done",
+		},
+		{
+			Timestamp: resultTs,
+			Type:      "say",
+			Say:       "command_output",
+			Text:      "done",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	sess, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	// The paired result timestamp must be recorded on the event.
+	require.Len(t, msgs, 2)
+	require.Len(t, msgs[1].ToolCalls, 1)
+	require.Len(t, msgs[1].ToolCalls[0].ResultEvents, 1)
+	assert.Equal(t,
+		time.UnixMilli(resultTs),
+		msgs[1].ToolCalls[0].ResultEvents[0].Timestamp,
+	)
+
+	// EndedAt must reflect the result time, not the tool invocation
+	// time, so session duration is not underreported.
+	assert.Equal(t, time.UnixMilli(resultTs), sess.EndedAt)
+	assert.True(t, sess.EndedAt.After(time.UnixMilli(toolTs)))
 }
 
 func TestParseRooCodeSessionEmptyReadFileResult(t *testing.T) {

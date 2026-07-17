@@ -81,7 +81,9 @@ func parseRooCodeSession(
 	model := historyItem.APIConfigName
 
 	// Read and parse ui_messages.json (may not exist for empty sessions).
-	parsedMessages, peakCtx, err := parseRooCodeMessages(messagesPath, model)
+	parsedMessages, peakCtx, maxTS, err := parseRooCodeMessages(
+		messagesPath, model,
+	)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, nil, fmt.Errorf("parsing ui_messages.json: %w", err)
 	}
@@ -92,8 +94,11 @@ func parseRooCodeSession(
 	// Parse startedAt from the history item timestamp (ms since epoch).
 	startedAt := time.UnixMilli(historyItem.Timestamp)
 
-	// Determine endedAt from the last message timestamp.
-	var endedAt time.Time
+	// Determine endedAt from the latest transcript timestamp. Prefer
+	// maxTS (which includes paired command/MCP response timestamps
+	// that are consumed during pairing and never emitted as messages),
+	// and fall back to the latest emitted message timestamp.
+	endedAt := maxTS
 	for _, msg := range parsedMessages {
 		if msg.Timestamp.After(endedAt) {
 			endedAt = msg.Timestamp
@@ -289,10 +294,12 @@ func parseRooCodeSession(
 //     attributed as user-system messages with tool results.
 //   - "api_req_started" and "checkpoint_saved" are internal metadata and are
 //     skipped.
-func parseRooCodeMessages(path string, model string) ([]ParsedMessage, int, error) {
+func parseRooCodeMessages(
+	path string, model string,
+) ([]ParsedMessage, int, time.Time, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, time.Time{}, err
 	}
 
 	var rawMessages []json.RawMessage
@@ -300,7 +307,9 @@ func parseRooCodeMessages(path string, model string) ([]ParsedMessage, int, erro
 		// Try parsing as a single message.
 		var single rooCodeMessage
 		if err2 := json.Unmarshal(data, &single); err2 != nil {
-			return nil, 0, fmt.Errorf("parsing ui_messages.json: %w", err)
+			return nil, 0, time.Time{}, fmt.Errorf(
+				"parsing ui_messages.json: %w", err,
+			)
 		}
 		rawMessages = []json.RawMessage{data}
 	}
@@ -309,6 +318,11 @@ func parseRooCodeMessages(path string, model string) ([]ParsedMessage, int, erro
 	ordinal := 0
 	isFirst := true
 	peakCtx := 0
+	// maxTS tracks the latest raw transcript timestamp across all
+	// parsed messages, including paired command/MCP responses that are
+	// consumed during pairing and never emitted as standalone messages.
+	// It drives EndedAt so result timestamps are not lost.
+	var maxTS time.Time
 	// pendingCmdMsgIdx tracks the index in parsedMessages of the
 	// most recent execute_command tool call awaiting a result.
 	// -1 means no pending command.
@@ -343,6 +357,9 @@ func parseRooCodeMessages(path string, model string) ([]ParsedMessage, int, erro
 		}
 
 		ts := time.UnixMilli(msg.Timestamp)
+		if ts.After(maxTS) {
+			maxTS = ts
+		}
 
 		// Determine role and extract tool calls / tool results.
 		role, toolCalls, toolResults := classifyRooCodeMessage(
@@ -430,8 +447,9 @@ func parseRooCodeMessages(path string, model string) ([]ParsedMessage, int, erro
 					tc.ResultEvents = append(
 						tc.ResultEvents,
 						ParsedToolResultEvent{
-							Status:  status,
-							Content: output,
+							Status:    status,
+							Content:   output,
+							Timestamp: ts,
 						},
 					)
 				}
@@ -469,8 +487,9 @@ func parseRooCodeMessages(path string, model string) ([]ParsedMessage, int, erro
 					tc.ResultEvents = append(
 						tc.ResultEvents,
 						ParsedToolResultEvent{
-							Status:  "completed",
-							Content: content,
+							Status:    "completed",
+							Content:   content,
+							Timestamp: ts,
 						},
 					)
 				}
@@ -560,7 +579,7 @@ func parseRooCodeMessages(path string, model string) ([]ParsedMessage, int, erro
 		}
 	}
 
-	return parsedMessages, peakCtx, nil
+	return parsedMessages, peakCtx, maxTS, nil
 }
 
 // classifyRooCodeMessage determines the role, tool calls, and tool results
