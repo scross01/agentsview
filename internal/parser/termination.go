@@ -123,6 +123,14 @@ func hasOrphanedToolCall(messages []ParsedMessage) bool {
 			}
 		}
 	}
+	// Also treat tool calls with embedded results (e.g. RooCode
+	// stores results directly in ResultEvents) as resolved.
+	for i := range last.ToolCalls {
+		tc := &last.ToolCalls[i]
+		if tc.ToolUseID != "" && len(tc.ResultEvents) > 0 {
+			resolved[tc.ToolUseID] = true
+		}
+	}
 
 	for _, tc := range last.ToolCalls {
 		if tc.ToolUseID != "" && !resolved[tc.ToolUseID] {

@@ -348,6 +348,7 @@ thread JSON files.
 | Qwen Code             | `~/.qwen/projects/`                                                                                                                                                     |
 | QwenPaw               | `~/.copaw/workspaces/`, `~/.qwenpaw/workspaces/`                                                                                                                        |
 | Reasonix              | `~/.reasonix/`, `%APPDATA%\\reasonix\\` (Windows)                                                                                                                       |
+| RooCode               | `~/Library/Application Support/Code/User/globalStorage/RooVeterinaryInc.roo-cline/` (macOS), `~/.config/Code/User/globalStorage/RooVeterinaryInc.roo-cline/` (Linux), `%APPDATA%\\Code\\User\\globalStorage\\RooVeterinaryInc.roo-cline\\` (Windows) |
 | VSCode Copilot        | `~/Library/Application Support/Code/User/` (macOS)                                                                                                                      |
 | Visual Studio Copilot | `%LOCALAPPDATA%\\Temp\\VSGitHubCopilotLogs\\traces\\` (Windows), `~/Library/Caches/VSGitHubCopilotLogs/traces/` (macOS), `~/.cache/VSGitHubCopilotLogs/traces/` (Linux) |
 | Windsurf              | `~/Library/Application Support/Windsurf/User/` (macOS), `~/.config/Windsurf/User/` (Linux), `%APPDATA%\\Windsurf\\User\\` (Windows)                                     |

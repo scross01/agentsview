@@ -512,6 +512,8 @@ func providerFactoryForDef(def AgentDef) ProviderFactory {
 		return newZencoderProviderFactory(def)
 	case AgentZed:
 		return newZedProviderFactory(def)
+	case AgentRooCode:
+		return newRooCodeProviderFactory(def)
 	default:
 		panic("missing provider factory for " + string(def.Type))
 	}

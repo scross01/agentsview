@@ -268,6 +268,7 @@ can still be parsed.
 | Qwen Code             | `~/.qwen/projects/`                                                              | JSONL per session                                                                                                               |
 | QwenPaw               | `~/.copaw/workspaces/`                                                           | JSON session files                                                                                                              |
 | Reasonix              | `~/.reasonix/` and `~/AppData/Roaming/reasonix/`                                 | JSONL sessions plus `.jsonl.meta` sidecars                                                                                      |
+| RooCode               | (platform-specific, see below)                                                   | `history_item.json` + `ui_messages.json` per task                                                                              |
 | Shelley               | `~/.config/shelley/`                                                             | SQLite database (`shelley.db`)                                                                                                  |
 | Visual Studio Copilot | (platform-specific, see below)                                                   | Trace JSONL files                                                                                                               |
 | VS Code Copilot       | (platform-specific, see below)                                                   | JSON / JSONL per session                                                                                                        |
@@ -420,6 +421,27 @@ names and per-request token usage.
 - **Linux:** `~/.config/Kiro/User/globalStorage/kiro.kiroagent/`
 - **Windows:** `~/AppData/Roaming/Kiro/User/globalStorage/kiro.kiroagent/`
 
+**RooCode default directories** vary by platform:
+
+- **macOS:**
+  `~/Library/Application Support/Code/User/globalStorage/RooVeterinaryInc.roo-cline/`
+- **Linux:** `~/.config/Code/User/globalStorage/RooVeterinaryInc.roo-cline/`
+- **Windows:** `~/AppData/Roaming/Code/User/globalStorage/RooVeterinaryInc.roo-cline/`
+
+RooCode (RooVeterinaryInc.roo-cline) is a VSCode extension that stores
+sessions under `tasks/<taskId>/` in VSCode's globalStorage directory. Each task
+directory contains `history_item.json` (metadata including task description,
+model name, workspace path, token counts, and recorded cost) and
+`ui_messages.json` (the Cline-format transcript with user prompts, assistant
+responses, reasoning blocks, and tool calls). AgentsView parses the
+`apiConfigName` field from `history_item.json` as the session model, extracts
+project names from the workspace path via git-root detection, and emits the
+recorded `totalCost` as a usage event for cost tracking.
+
+RooCode was shut down on May 15, 2026. ZooCode (Zoo-CodeInc.zoo-cline) is the
+active community fork and will be supported separately. Set `ROOCODE_DIR` or
+`roocode_dirs` if your VSCode globalStorage directory is elsewhere.
+
 **Antigravity CLI transcript sources:** Antigravity CLI has used both SQLite
 databases and AES-encrypted `.pb` files. AgentsView reads whichever source is
 richest, in this order:
@@ -506,6 +528,7 @@ export QODER_PROJECTS_DIR=~/custom/qoder/projects
 export QWEN_PROJECTS_DIR=~/custom/qwen
 export QWENPAW_DIR=~/custom/qwenpaw
 export REASONIX_DIR=~/custom/reasonix
+export ROOCODE_DIR=~/custom/roocode
 export SHELLEY_DIR=~/custom/shelley
 export VISUALSTUDIO_COPILOT_DIR=~/custom/visualstudio-copilot/traces
 export VSCODE_COPILOT_DIR=~/custom/vscode
@@ -542,7 +565,7 @@ The corresponding fields are `aider_dirs`, `amp_dirs`, `antigravity_dirs`,
 `kiro_dirs`, `kiro_ide_dirs`, `mimocode_dirs`, `vibe_session_dirs`,
 `omp_dirs`, `openclaw_dirs`, `opencode_dirs`, `openhands_dirs`, `pi_dirs`,
 `piebald_dirs`, `posit_assistant_dirs`, `positron_dirs`, `qclaw_dirs`,
-`qoder_project_dirs`, `qwen_project_dirs`, `qwenpaw_dirs`, `reasonix_dirs`,
+`qoder_project_dirs`, `qwen_project_dirs`, `qwenpaw_dirs`, `reasonix_dirs`, `roocode_dirs`,
 `shelley_dirs`, `visualstudio_copilot_dirs`, `vscode_copilot_dirs`,
 `windsurf_dirs`, `warp_dirs`, `workbuddy_project_dirs`, `zcode_dirs`,
 `zed_dirs`, and `zencoder_dirs`. Each accepts an array of paths. When set,
