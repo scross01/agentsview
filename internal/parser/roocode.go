@@ -234,8 +234,11 @@ func parseRooCodeSession(
 	)
 
 	// Emit usage event with model name, token counts, and recorded cost
-	// for catalog-based pricing.
-	if model != "" {
+	// for catalog-based pricing. Emit whenever accounting data exists;
+	// model may be absent when apiConfigName is omitted.
+	if historyItem.TokensIn > 0 || historyItem.TokensOut > 0 ||
+		historyItem.CacheReads > 0 || historyItem.CacheWrites > 0 ||
+		historyItem.TotalCost > 0 {
 		event := ParsedUsageEvent{
 			SessionID: sessionID,
 			Source:    "session",

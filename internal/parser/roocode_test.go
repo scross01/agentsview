@@ -291,6 +291,60 @@ func TestParseRooCodeSessionWithAPIConfigModel(t *testing.T) {
 	}
 }
 
+func TestParseRooCodeSessionWithoutAPIConfigName(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-no-config")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-no-config",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "No config test",
+		TokensIn:  500,
+		TokensOut: 150,
+		TotalCost: 0.02,
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Task with no config",
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Response",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	sess, _, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	require.Len(t, sess.UsageEvents, 1)
+	assert.Equal(t, "", sess.UsageEvents[0].Model)
+	assert.Equal(t, "session", sess.UsageEvents[0].Source)
+	assert.Equal(t, 500, sess.UsageEvents[0].InputTokens)
+	assert.Equal(t, 150, sess.UsageEvents[0].OutputTokens)
+	require.NotNil(t, sess.UsageEvents[0].CostUSD)
+	assert.Equal(t, 0.02, *sess.UsageEvents[0].CostUSD)
+}
+
 func TestParseRooCodeSessionWithProjectExtraction(t *testing.T) {
 	tmpDir := t.TempDir()
 	taskDir := filepath.Join(tmpDir, "tasks", "test-task-proj")
