@@ -2137,6 +2137,42 @@ func TestClassifyRooCodeTermination(t *testing.T) {
 			want:     "",
 		},
 		{
+			name:   "empty status with orphaned tool call",
+			status: "",
+			messages: []ParsedMessage{
+				{Role: RoleUser, Content: "fix it"},
+				{
+					Role:       RoleAssistant,
+					HasToolUse: true, ToolCalls: []ParsedToolCall{
+						{ToolUseID: "t1", ToolName: "readFile"},
+					},
+				},
+			},
+			want: TerminationToolCallPending,
+		},
+		{
+			name:   "empty status with thinking-only ending",
+			status: "",
+			messages: []ParsedMessage{
+				{Role: RoleUser, Content: "do something"},
+				{
+					Role:        RoleAssistant,
+					Content:     "[Thinking]\nAnalyzing the codebase...\n[/Thinking]",
+					HasThinking: true,
+				},
+			},
+			want: TerminationToolCallPending,
+		},
+		{
+			name:   "empty status with normal messages",
+			status: "",
+			messages: []ParsedMessage{
+				{Role: RoleUser, Content: "do something"},
+				{Role: RoleAssistant, Content: "Done."},
+			},
+			want: "",
+		},
+		{
 			name:   "completed with thinking + real text",
 			status: "completed",
 			messages: []ParsedMessage{

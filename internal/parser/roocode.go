@@ -226,12 +226,12 @@ func parseRooCodeSession(
 
 	// Classify termination status from history_item status and
 	// message content. Maps RooCode's raw status to the standard
-	// termination vocabulary used by all agents.
-	if historyItem.Status != "" {
-		sess.TerminationStatus = classifyRooCodeTermination(
-			historyItem.Status, parsedMessages,
-		)
-	}
+	// termination vocabulary used by all agents. Always call
+	// classifyRooCodeTermination even when status is empty — it
+	// detects orphaned tool calls and thinking-only endings.
+	sess.TerminationStatus = classifyRooCodeTermination(
+		historyItem.Status, parsedMessages,
+	)
 
 	// Emit usage event with model name, token counts, and recorded cost
 	// for catalog-based pricing.
