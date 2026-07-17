@@ -429,14 +429,11 @@ func parseRooCodeMessages(
 			ordinal++
 		}
 
-		hasToolCalls := len(toolCalls) > 0
-		hasToolResults := len(toolResults) > 0
-
 		// Handle command_output by pairing it with the preceding
 		// execute_command tool call. Instead of emitting a standalone
 		// system message, update the tool call's ResultContent and
 		// ResultEvents so the signals system can detect failures.
-		if msg.Say == "command_output" && hasToolResults {
+		if msg.Say == "command_output" && len(toolResults) > 0 {
 			output := toolResults[0].ContentRaw
 			paired := false
 			if pendingCmdMsgIdx >= 0 &&
@@ -517,7 +514,7 @@ func parseRooCodeMessages(
 			continue
 		}
 
-		if hasToolCalls {
+		if len(toolCalls) > 0 {
 			// Emit assistant message with tool calls.
 			parsedMessages = append(parsedMessages, ParsedMessage{
 				Ordinal:       ordinal,
@@ -730,6 +727,9 @@ func classifyRooCodeMessage(
 func classifyRooCodeTermination(
 	status string, messages []ParsedMessage,
 ) TerminationStatus {
+	if len(messages) == 0 {
+		return ""
+	}
 	// Always check for incomplete endings regardless of status.
 	// Truly completed sessions should have a final assistant response,
 	// not just thinking content or unresolved tool calls.
