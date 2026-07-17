@@ -69,6 +69,9 @@ func TestResolveScriptHonorsClaudeConfigDirRoot(t *testing.T) {
 }
 
 func TestResolveScriptTreatsEnvValuesAsData(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("resolve script runs on POSIX remote hosts; local Windows filepaths and MSYS shell parsing are not representative")
+	}
 	home := t.TempDir()
 	projectsDir := filepath.Join(home, "config root", "projects")
 	require.NoError(t, os.MkdirAll(projectsDir, 0o755), "mkdir projects")
