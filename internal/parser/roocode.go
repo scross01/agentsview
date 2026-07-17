@@ -30,7 +30,7 @@ type rooCodeHistoryItem struct {
 	TokensOut               int      `json:"tokensOut"`
 	CacheWrites             int      `json:"cacheWrites,omitempty"`
 	CacheReads              int      `json:"cacheReads,omitempty"`
-	TotalCost               float64  `json:"totalCost"`
+	TotalCost               *float64 `json:"totalCost"`
 	Size                    int64    `json:"size,omitempty"`
 	Workspace               string   `json:"workspace,omitempty"`
 	Mode                    string   `json:"mode,omitempty"`
@@ -243,7 +243,7 @@ func parseRooCodeSession(
 	// model may be absent when apiConfigName is omitted.
 	if historyItem.TokensIn > 0 || historyItem.TokensOut > 0 ||
 		historyItem.CacheReads > 0 || historyItem.CacheWrites > 0 ||
-		historyItem.TotalCost > 0 {
+		historyItem.TotalCost != nil {
 		event := ParsedUsageEvent{
 			SessionID: sessionID,
 			Source:    "session",
@@ -268,8 +268,12 @@ func parseRooCodeSession(
 		if historyItem.CacheWrites > 0 {
 			event.CacheCreationInputTokens = historyItem.CacheWrites
 		}
-		if historyItem.TotalCost > 0 {
-			cost := historyItem.TotalCost
+		// Set CostUSD whenever totalCost is present, including an
+		// explicit zero. A reported cost of 0 (free tier, local model)
+		// is authoritative and must override catalog-based pricing;
+		// treating it as absent would misprice token-bearing sessions.
+		if historyItem.TotalCost != nil {
+			cost := *historyItem.TotalCost
 			event.CostUSD = &cost
 		}
 		sess.UsageEvents = []ParsedUsageEvent{event}

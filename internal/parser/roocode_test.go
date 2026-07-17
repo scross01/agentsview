@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func rooCostPtr(v float64) *float64 { return &v }
+
 func TestParseRooCodeSession(t *testing.T) {
 	tmpDir := t.TempDir()
 	taskDir := filepath.Join(tmpDir, "tasks", "test-task-123")
@@ -24,7 +26,7 @@ func TestParseRooCodeSession(t *testing.T) {
 		Task:      "Test task description",
 		TokensIn:  100,
 		TokensOut: 200,
-		TotalCost: 0.05,
+		TotalCost: rooCostPtr(0.05),
 		Workspace: "/Users/test/project",
 		Mode:      "code",
 		Status:    "completed",
@@ -119,7 +121,7 @@ func TestParseRooCodeSessionWithPartialMessages(t *testing.T) {
 		Task:      "Task with partial messages",
 		TokensIn:  50,
 		TokensOut: 100,
-		TotalCost: 0.02,
+		TotalCost: rooCostPtr(0.02),
 		Workspace: "/Users/test/project",
 	}
 	historyJSON, err := json.Marshal(historyItem)
@@ -239,7 +241,7 @@ func TestParseRooCodeSessionWithAPIConfigModel(t *testing.T) {
 		TokensOut:     200,
 		CacheReads:    50,
 		CacheWrites:   30,
-		TotalCost:     0.05,
+		TotalCost:     rooCostPtr(0.05),
 		Workspace:     "/Users/test/project",
 		APIConfigName: "anthropic/claude-sonnet-4",
 	}
@@ -292,6 +294,93 @@ func TestParseRooCodeSessionWithAPIConfigModel(t *testing.T) {
 	}
 }
 
+func TestParseRooCodeSessionCostPresence(t *testing.T) {
+	tests := []struct {
+		name       string
+		totalCost  *float64
+		wantCost   bool
+		wantCostUS float64
+	}{
+		{
+			name:      "explicit zero cost is authoritative",
+			totalCost: rooCostPtr(0),
+			wantCost:  true,
+		},
+		{
+			name:       "positive cost is recorded",
+			totalCost:  rooCostPtr(0.05),
+			wantCost:   true,
+			wantCostUS: 0.05,
+		},
+		{
+			name:      "absent cost leaves CostUSD nil",
+			totalCost: nil,
+			wantCost:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			taskDir := filepath.Join(tmpDir, "tasks", "test-cost")
+			require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+			historyItem := rooCodeHistoryItem{
+				ID:            "test-cost",
+				Number:        1,
+				Timestamp:     1688836851000,
+				Task:          "Cost presence test",
+				TokensIn:      100,
+				TokensOut:     200,
+				TotalCost:     tt.totalCost,
+				Workspace:     "/Users/test/project",
+				APIConfigName: "local/llama",
+			}
+			historyJSON, err := json.Marshal(historyItem)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(
+				filepath.Join(taskDir, "history_item.json"),
+				historyJSON, 0644,
+			))
+
+			messages := []rooCodeMessage{
+				{
+					Timestamp: 1688836851000,
+					Type:      "say",
+					Say:       "text",
+					Text:      "Do it",
+				},
+				{
+					Timestamp: 1688836860000,
+					Type:      "say",
+					Say:       "text",
+					Text:      "Done",
+				},
+			}
+			messagesJSON, err := json.Marshal(messages)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(
+				filepath.Join(taskDir, "ui_messages.json"),
+				messagesJSON, 0644,
+			))
+
+			sess, _, err := parseRooCodeSession(taskDir, "", "")
+			require.NoError(t, err)
+
+			// Token-bearing session always emits a usage event.
+			require.Len(t, sess.UsageEvents, 1)
+			if tt.wantCost {
+				require.NotNil(t, sess.UsageEvents[0].CostUSD,
+					"present totalCost must set CostUSD, including zero")
+				assert.Equal(t, tt.wantCostUS, *sess.UsageEvents[0].CostUSD)
+			} else {
+				assert.Nil(t, sess.UsageEvents[0].CostUSD,
+					"absent totalCost must leave CostUSD nil")
+			}
+		})
+	}
+}
+
 func TestParseRooCodeSessionWithoutAPIConfigName(t *testing.T) {
 	tmpDir := t.TempDir()
 	taskDir := filepath.Join(tmpDir, "tasks", "test-task-no-config")
@@ -304,7 +393,7 @@ func TestParseRooCodeSessionWithoutAPIConfigName(t *testing.T) {
 		Task:      "No config test",
 		TokensIn:  500,
 		TokensOut: 150,
-		TotalCost: 0.02,
+		TotalCost: rooCostPtr(0.02),
 	}
 	historyJSON, err := json.Marshal(historyItem)
 	require.NoError(t, err)
@@ -583,7 +672,7 @@ func TestParseRooCodeSessionRepeatedToolUseIDsUnique(t *testing.T) {
 		Task:          "Repeated tool test",
 		TokensIn:      100,
 		TokensOut:     200,
-		TotalCost:     0.01,
+		TotalCost:     rooCostPtr(0.01),
 		Workspace:     "/Users/test/project",
 		APIConfigName: "anthropic/claude-sonnet-4",
 	}
