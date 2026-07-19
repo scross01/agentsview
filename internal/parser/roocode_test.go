@@ -3435,3 +3435,173 @@ func TestParseRooCodeSessionMultibyteSessionName(t *testing.T) {
 		})
 	}
 }
+
+func TestParseRooCodeSessionSubtaskResultNotPairedToFailedNewTask(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-failed-newtask")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-failed-newtask",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Failed delegation test",
+		Workspace: "/Users/test/project",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	// The delegation fails; a stray subtask_result arriving later
+	// must not attach a completion to the failed newTask.
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Delegate the work",
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "ask",
+			Ask:       "tool",
+			Text:      `{"tool":"newTask","mode":"Code","content":"Implement it"}`,
+		},
+		{
+			Timestamp: 1688836865000,
+			Type:      "say",
+			Say:       "error",
+			Text:      "Delegation was rejected",
+		},
+		{
+			Timestamp: 1688836870000,
+			Type:      "say",
+			Say:       "subtask_result",
+			Text:      "Child finished the work",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	_, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	// The newTask keeps only its errored event.
+	require.Len(t, msgs[1].ToolCalls, 1)
+	tc := msgs[1].ToolCalls[0]
+	assert.Equal(t, "newTask", tc.ToolName)
+	require.Len(t, tc.ResultEvents, 1)
+	assert.Equal(t, "errored", tc.ResultEvents[0].Status)
+
+	// The subtask_result falls back to a standalone system message.
+	last := msgs[len(msgs)-1]
+	assert.Equal(t, RoleSystem, last.Role)
+	assert.Equal(t, "Child finished the work", last.Content)
+}
+
+func TestParseRooCodeSessionChildIDsSkipFailedNewTask(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-childskip")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	// Only one child exists: the first delegation failed before
+	// spawning, so the single child ID belongs to the second call.
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-childskip",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Child ID skip test",
+		Workspace: "/Users/test/project",
+		ChildIDs:  []string{"child-b"},
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Delegate twice",
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "ask",
+			Ask:       "tool",
+			Text:      `{"tool":"newTask","mode":"Code","content":"First try"}`,
+		},
+		{
+			Timestamp: 1688836865000,
+			Type:      "say",
+			Say:       "error",
+			Text:      "Delegation was rejected",
+		},
+		{
+			Timestamp: 1688836870000,
+			Type:      "ask",
+			Ask:       "tool",
+			Text:      `{"tool":"newTask","mode":"Code","content":"Second try"}`,
+		},
+		{
+			Timestamp: 1688836880000,
+			Type:      "say",
+			Say:       "subtask_result",
+			Text:      "Child finished",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	_, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	var newTasks []*ParsedToolCall
+	for mi := range msgs {
+		for ci := range msgs[mi].ToolCalls {
+			if msgs[mi].ToolCalls[ci].ToolName == "newTask" {
+				newTasks = append(newTasks, &msgs[mi].ToolCalls[ci])
+			}
+		}
+	}
+	require.Len(t, newTasks, 2)
+
+	// The failed first delegation gets no child link; the second
+	// call receives the only child ID.
+	assert.Equal(t, "", newTasks[0].SubagentSessionID)
+	assert.Equal(t, "roocode:child-b", newTasks[1].SubagentSessionID)
+}
+
+func TestParseRooCodeSessionEmptyHistoryIDFallsBackToDirName(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-noid")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	// Legacy or incomplete history items can omit the id entirely.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		[]byte(`{"ts":1688836851000,"task":"No ID recorded"}`), 0644,
+	))
+
+	sess, _, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	// The directory name (the on-disk task ID) keeps the session
+	// distinct instead of colliding on "roocode:".
+	assert.Equal(t, "roocode:test-task-noid", sess.ID)
+	assert.Equal(t, "test-task-noid", sess.SourceSessionID)
+}

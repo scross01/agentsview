@@ -78,6 +78,14 @@ func parseRooCodeSession(
 		return nil, nil, fmt.Errorf("parsing history_item.json: %w", err)
 	}
 
+	// Incomplete or legacy history items can omit the id. Fall back
+	// to the task directory name (which is the task ID on disk) so
+	// such sessions get distinct IDs instead of all colliding on
+	// "roocode:" and overwriting one another.
+	if historyItem.ID == "" {
+		historyItem.ID = filepath.Base(filepath.Clean(taskDir))
+	}
+
 	// Model name from the API config name (provider profile).
 	model := historyItem.APIConfigName
 
@@ -204,18 +212,24 @@ func parseRooCodeSession(
 	// Link newTask tool calls to their child sessions so the
 	// frontend can render inline subagent content. RooCode
 	// appends childIds chronologically, matching newTask message
-	// order in ui_messages.json.
+	// order in ui_messages.json. Failed delegations never spawned
+	// a child, so errored newTask calls are skipped to keep the
+	// remaining calls aligned with their child IDs.
 	if len(historyItem.ChildIDs) > 0 {
 		childIdx := 0
 		for mi := range parsedMessages {
 			for ci := range parsedMessages[mi].ToolCalls {
-				if parsedMessages[mi].ToolCalls[ci].ToolName == "newTask" &&
-					childIdx < len(historyItem.ChildIDs) {
-					parsedMessages[mi].ToolCalls[ci].SubagentSessionID =
-						string(AgentRooCode) + ":" +
-							historyItem.ChildIDs[childIdx]
-					childIdx++
+				tc := &parsedMessages[mi].ToolCalls[ci]
+				if tc.ToolName != "newTask" ||
+					childIdx >= len(historyItem.ChildIDs) {
+					continue
 				}
+				if rooToolCallErrored(tc) {
+					continue
+				}
+				tc.SubagentSessionID = string(AgentRooCode) + ":" +
+					historyItem.ChildIDs[childIdx]
+				childIdx++
 			}
 		}
 	}
@@ -644,6 +658,7 @@ func parseRooCodeMessages(
 			errTargets := rooErrorTargets{
 				cmd:     &pendingCmdMsgIdx,
 				mcp:     &pendingMcpMsgIdx,
+				newTask: &pendingNewTaskMsgIdx,
 				general: &pendingToolMsgIdx,
 			}
 
@@ -1001,7 +1016,25 @@ func rooCodeIsToolErrorEvent(say, ask string) bool {
 type rooErrorTargets struct {
 	cmd     *int
 	mcp     *int
+	newTask *int
 	general *int
+}
+
+// trackers returns the pending-tool index pointers an error event may
+// pair with or clear.
+func (t rooErrorTargets) trackers() []*int {
+	return []*int{t.cmd, t.mcp, t.newTask, t.general}
+}
+
+// rooToolCallErrored reports whether a tool call carries an errored
+// result event, meaning the call failed rather than completed.
+func rooToolCallErrored(tc *ParsedToolCall) bool {
+	for _, ev := range tc.ResultEvents {
+		if ev.Status == "errored" {
+			return true
+		}
+	}
+	return false
 }
 
 // rooPairErrorToPendingTool links an error event to the most recent
@@ -1019,7 +1052,7 @@ func rooPairErrorToPendingTool(
 	ts time.Time,
 ) bool {
 	idx := -1
-	for _, t := range []*int{targets.cmd, targets.mcp, targets.general} {
+	for _, t := range targets.trackers() {
 		if *t >= 0 && *t < len(parsedMessages) && *t > idx {
 			idx = *t
 		}
@@ -1039,15 +1072,13 @@ func rooPairErrorToPendingTool(
 			},
 		)
 	}
-	// Clear every tracker referencing the paired message.
-	if *targets.cmd == idx {
-		*targets.cmd = -1
-	}
-	if *targets.mcp == idx {
-		*targets.mcp = -1
-	}
-	if *targets.general == idx {
-		*targets.general = -1
+	// Clear every tracker referencing the paired message. Clearing
+	// the newTask tracker here keeps a later subtask_result from
+	// attaching a completion to a delegation that already failed.
+	for _, t := range targets.trackers() {
+		if *t == idx {
+			*t = -1
+		}
 	}
 	return true
 }
