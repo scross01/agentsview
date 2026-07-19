@@ -3239,3 +3239,76 @@ func TestRooCodeIsMetadataSay(t *testing.T) {
 			"%q should NOT be metadata", say)
 	}
 }
+
+func TestParseRooCodeSessionImageOnlyMessages(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-images")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-images",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Image-only message test",
+		Workspace: "/Users/test/project",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	// The initial prompt and a feedback message carry only images
+	// (data URIs, no text). Both must survive as placeholder
+	// messages instead of being dropped by the empty-content check.
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "",
+			Images:    []string{"data:image/png;base64,AAA"},
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "I see a screenshot of the error.",
+		},
+		{
+			Timestamp: 1688836870000,
+			Type:      "say",
+			Say:       "user_feedback",
+			Text:      "",
+			Images: []string{
+				"data:image/png;base64,BBB",
+				"data:image/png;base64,CCC",
+			},
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	sess, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	require.Len(t, msgs, 3)
+
+	// Initial image-only prompt becomes a user message with a
+	// placeholder, not a dropped message.
+	assert.Equal(t, RoleUser, msgs[0].Role)
+	assert.Equal(t, "[image]", msgs[0].Content)
+	assert.Equal(t, "[image]", sess.FirstMessage)
+
+	// Image-only feedback keeps one placeholder per image.
+	assert.Equal(t, RoleUser, msgs[2].Role)
+	assert.Equal(t, "[image] [image]", msgs[2].Content)
+
+	// Both image-only messages count as user messages.
+	assert.Equal(t, 2, sess.UserMessageCount)
+}

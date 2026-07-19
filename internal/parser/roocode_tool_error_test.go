@@ -162,3 +162,137 @@ func TestRooCodeIsToolErrorEvent(t *testing.T) {
 			tt.say, tt.ask, got, tt.want)
 	}
 }
+
+func TestParseRooCodeSessionErrorNotPairedToCompletedRead(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-err-completed")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-err-completed",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Error after completed read",
+		Workspace: "/Users/test/project",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	// The readFile call completes via its embedded content, so the
+	// later unrelated error must not attach to it as a failure.
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Read the config",
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "ask",
+			Ask:       "tool",
+			Text:      `{"tool":"readFile","path":"config.json","content":"{}"}`,
+		},
+		{
+			Timestamp: 1688836870000,
+			Type:      "say",
+			Say:       "error",
+			Text:      "Unrelated provider error",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	sess, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	// user task + readFile + standalone error message = 3.
+	assert.Equal(t, 3, sess.MessageCount)
+
+	// The completed readFile keeps exactly its embedded result.
+	require.Len(t, msgs[1].ToolCalls, 1)
+	tc := msgs[1].ToolCalls[0]
+	require.Len(t, tc.ResultEvents, 1)
+	assert.Equal(t, "completed", tc.ResultEvents[0].Status)
+
+	// The error surfaces as a standalone system message.
+	assert.Equal(t, RoleSystem, msgs[2].Role)
+	assert.Equal(t, "Unrelated provider error", msgs[2].Content)
+}
+
+func TestParseRooCodeSessionErrorNotPairedAcrossNormalTurn(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-err-stale")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-err-stale",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Error after intervening turn",
+		Workspace: "/Users/test/project",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	// A normal assistant message after the appliedDiff call ends
+	// that call's turn; the later diff_error must not reach back
+	// across it and mark the call as failed.
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Do the edit",
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "ask",
+			Ask:       "tool",
+			Text:      `{"tool":"appliedDiff","path":"src/main.go","diff":"..."}`,
+		},
+		{
+			Timestamp: 1688836865000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "The edit is applied, moving on.",
+		},
+		{
+			Timestamp: 1688836870000,
+			Type:      "say",
+			Say:       "diff_error",
+			Text:      "Stale diff error from a later attempt",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	sess, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	// task + appliedDiff + assistant text + standalone error = 4.
+	assert.Equal(t, 4, sess.MessageCount)
+
+	require.Len(t, msgs[1].ToolCalls, 1)
+	assert.Empty(t, msgs[1].ToolCalls[0].ResultEvents,
+		"error across a normal turn must not attach to the tool call")
+
+	assert.Equal(t, RoleSystem, msgs[3].Role)
+	assert.Equal(t, "Stale diff error from a later attempt", msgs[3].Content)
+}

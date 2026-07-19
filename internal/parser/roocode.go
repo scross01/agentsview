@@ -408,6 +408,19 @@ func parseRooCodeMessages(
 			content = ""
 		}
 
+		// Preserve image-only messages. RooCode stores pasted or
+		// attached images as data URIs in the images field, so a
+		// prompt or feedback message can carry images with no text.
+		// Represent each as an [image] placeholder so the message
+		// survives the empty-content check below; the data URI
+		// itself is not transcript content.
+		if content == "" && reasoning == "" && len(toolCalls) == 0 &&
+			len(msg.Images) > 0 {
+			content = strings.TrimSpace(
+				strings.Repeat("[image] ", len(msg.Images)),
+			)
+		}
+
 		// Context management events (condense_context, sliding_window_truncation)
 		// are compaction boundaries even when their text field is empty.
 		// Emit them as minimal system messages with IsCompactBoundary so
@@ -616,8 +629,16 @@ func parseRooCodeMessages(
 			// Track every tool call generally so tool-specific
 			// errors (diff_error, rooignore_error) can pair with the
 			// most recent unresolved call even when it has no
-			// specialized deferred-result channel.
-			pendingToolMsgIdx = msgIdx
+			// specialized deferred-result channel. Calls already
+			// completed via embedded results (e.g. readFile content)
+			// are not valid error targets — and they end the previous
+			// call's turn, so clear the tracker instead of letting a
+			// stale target absorb a later unrelated error.
+			if len(toolCalls[0].ResultEvents) == 0 {
+				pendingToolMsgIdx = msgIdx
+			} else {
+				pendingToolMsgIdx = -1
+			}
 			ordinal++
 		} else if content != "" {
 			errTargets := rooErrorTargets{
@@ -663,6 +684,13 @@ func parseRooCodeMessages(
 				ContentLength: len(content),
 			})
 			ordinal++
+			// A normal conversational message ends the most recent
+			// tool call's turn: a tool-specific error arriving after
+			// it belongs to whatever comes next, not to that call.
+			// The command and MCP trackers stay pending — their
+			// results arrive on dedicated say types that can
+			// legitimately trail other messages.
+			pendingToolMsgIdx = -1
 		}
 	}
 
