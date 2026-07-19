@@ -213,3 +213,91 @@ func TestRooCodeIsMetadataSayIncludesMCP(t *testing.T) {
 	assert.True(t, rooCodeIsMetadataSay("mcp_server_request_started"),
 		"mcp_server_request_started should be treated as metadata")
 }
+
+func TestParseRooCodeSessionCanonicalMCPPayloads(t *testing.T) {
+	tests := []struct {
+		name         string
+		payload      string
+		wantToolName string
+	}{
+		{
+			name: "use_mcp_tool names the invoked tool",
+			payload: `{"type":"use_mcp_tool","serverName":"weather",` +
+				`"toolName":"get_forecast","arguments":"{\"city\":\"Berlin\"}"}`,
+			wantToolName: "get_forecast",
+		},
+		{
+			name: "access_mcp_resource keeps the type as name",
+			payload: `{"type":"access_mcp_resource","serverName":"docs",` +
+				`"uri":"docs://readme"}`,
+			wantToolName: "access_mcp_resource",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			taskDir := filepath.Join(tmpDir, "tasks", "test-task-mcp-canonical")
+			require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+			historyItem := rooCodeHistoryItem{
+				ID:        "test-task-mcp-canonical",
+				Number:    1,
+				Timestamp: 1688836851000,
+				Task:      tt.name,
+				Workspace: "/Users/test/project",
+			}
+			historyJSON, err := json.Marshal(historyItem)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(
+				filepath.Join(taskDir, "history_item.json"),
+				historyJSON, 0644,
+			))
+
+			// Canonical Roo/Cline use_mcp_server payloads carry a
+			// "type" discriminator, not a "tool" field. The call must
+			// still be extracted and pair with its response.
+			messages := []rooCodeMessage{
+				{
+					Timestamp: 1688836851000,
+					Type:      "say",
+					Say:       "text",
+					Text:      "Use the MCP server",
+				},
+				{
+					Timestamp: 1688836860000,
+					Type:      "ask",
+					Ask:       "use_mcp_server",
+					Text:      tt.payload,
+				},
+				{
+					Timestamp: 1688836870000,
+					Type:      "say",
+					Say:       "mcp_server_response",
+					Text:      "server says hello",
+				},
+			}
+			messagesJSON, err := json.Marshal(messages)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(
+				filepath.Join(taskDir, "ui_messages.json"),
+				messagesJSON, 0644,
+			))
+
+			sess, msgs, err := parseRooCodeSession(taskDir, "", "")
+			require.NoError(t, err)
+
+			// user task + MCP tool call = 2 (response is paired).
+			assert.Equal(t, 2, sess.MessageCount)
+
+			require.Len(t, msgs[1].ToolCalls, 1)
+			tc := msgs[1].ToolCalls[0]
+			assert.Equal(t, tt.wantToolName, tc.ToolName)
+			assert.Equal(t, "MCP", tc.Category)
+			assert.Contains(t, tc.InputJSON, `"serverName"`)
+			require.Len(t, tc.ResultEvents, 1)
+			assert.Equal(t, "completed", tc.ResultEvents[0].Status)
+			assert.Equal(t, "server says hello", tc.ResultEvents[0].Content)
+		})
+	}
+}

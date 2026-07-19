@@ -819,7 +819,7 @@ func classifyRooCodeMessage(
 	case "use_mcp_server":
 		// Assistant invokes an MCP server tool. The text field
 		// carries JSON with server name and tool details.
-		tc := parseRooCodeToolCall(msg.Text, ordinal)
+		tc := parseRooCodeMcpCall(msg.Text, ordinal)
 		if tc == nil {
 			return RoleAssistant, nil, nil
 		}
@@ -999,10 +999,12 @@ type rooErrorTargets struct {
 
 // rooPairErrorToPendingTool links an error event to the most recent
 // unresolved tool call as an errored ResultEvent, preserving the error
-// timestamp. It prefers the specialized command and MCP trackers, then
-// falls back to the general tracker. All trackers pointing at the paired
-// message are cleared so the error is not double-counted. Returns true
-// if pairing succeeded.
+// timestamp. Among the valid trackers it picks the one with the
+// greatest message index: an error refers to whatever ran last, so an
+// older pending command must not absorb a diff_error that belongs to a
+// later edit. All trackers pointing at the paired message are cleared
+// so the error is not double-counted. Returns true if pairing
+// succeeded.
 func rooPairErrorToPendingTool(
 	parsedMessages []ParsedMessage,
 	targets rooErrorTargets,
@@ -1010,13 +1012,10 @@ func rooPairErrorToPendingTool(
 	ts time.Time,
 ) bool {
 	idx := -1
-	switch {
-	case *targets.cmd >= 0 && *targets.cmd < len(parsedMessages):
-		idx = *targets.cmd
-	case *targets.mcp >= 0 && *targets.mcp < len(parsedMessages):
-		idx = *targets.mcp
-	case *targets.general >= 0 && *targets.general < len(parsedMessages):
-		idx = *targets.general
+	for _, t := range []*int{targets.cmd, targets.mcp, targets.general} {
+		if *t >= 0 && *t < len(parsedMessages) && *t > idx {
+			idx = *t
+		}
 	}
 	if idx < 0 {
 		return false
@@ -1133,6 +1132,52 @@ func rooCommandOutputIsError(output string) bool {
 		}
 	}
 	return false
+}
+
+// parseRooCodeMcpCall extracts a ParsedToolCall from the JSON text of
+// an ask="use_mcp_server" message. Canonical Roo/Cline payloads carry
+// a "type" discriminator instead of a "tool" field:
+//
+//	{"type":"use_mcp_tool","serverName":"weather","toolName":"get_forecast","arguments":"..."}
+//	{"type":"access_mcp_resource","serverName":"docs","uri":"docs://readme"}
+//
+// use_mcp_tool calls are named after the invoked toolName; resource
+// accesses keep the type as the name. Payloads without "type" fall
+// back to the generic decoder for the simple {"tool":...} shape.
+func parseRooCodeMcpCall(text string, ordinal int) *ParsedToolCall {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return nil
+	}
+
+	var toolData map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &toolData); err != nil {
+		return nil
+	}
+
+	typeName, _ := toolData["type"].(string)
+	if typeName == "" {
+		return parseRooCodeToolCall(text, ordinal)
+	}
+
+	toolName := typeName
+	if typeName == "use_mcp_tool" {
+		if name, _ := toolData["toolName"].(string); name != "" {
+			toolName = name
+		}
+	}
+
+	inputJSON, err := json.Marshal(toolData)
+	if err != nil {
+		return nil
+	}
+
+	return &ParsedToolCall{
+		ToolUseID: fmt.Sprintf("roocode:%s:%d", toolName, ordinal),
+		ToolName:  toolName,
+		Category:  "MCP",
+		InputJSON: string(inputJSON),
+	}
 }
 
 // parseRooCodeToolCall extracts a ParsedToolCall from the JSON text of

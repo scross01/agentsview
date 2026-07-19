@@ -296,3 +296,76 @@ func TestParseRooCodeSessionErrorNotPairedAcrossNormalTurn(t *testing.T) {
 	assert.Equal(t, RoleSystem, msgs[3].Role)
 	assert.Equal(t, "Stale diff error from a later attempt", msgs[3].Content)
 }
+
+func TestParseRooCodeSessionErrorPairsMostRecentTool(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-err-recent")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-err-recent",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Error pairs most recent tool",
+		Workspace: "/Users/test/project",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	// A command is still pending (no output yet) when a later
+	// appliedDiff fails. The diff_error belongs to the edit, not to
+	// the older command.
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Run the server then edit",
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "ask",
+			Ask:       "command",
+			Text:      "npm run dev",
+		},
+		{
+			Timestamp: 1688836865000,
+			Type:      "ask",
+			Ask:       "tool",
+			Text:      `{"tool":"appliedDiff","path":"src/main.go","diff":"..."}`,
+		},
+		{
+			Timestamp: 1688836870000,
+			Type:      "say",
+			Say:       "diff_error",
+			Text:      "Search block not found in file",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	_, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	// The pending command stays unresolved.
+	require.Len(t, msgs[1].ToolCalls, 1)
+	assert.Equal(t, "execute_command", msgs[1].ToolCalls[0].ToolName)
+	assert.Empty(t, msgs[1].ToolCalls[0].ResultEvents,
+		"stale command must not absorb the later diff_error")
+
+	// The diff_error pairs with the most recent tool, appliedDiff.
+	require.Len(t, msgs[2].ToolCalls, 1)
+	tc := msgs[2].ToolCalls[0]
+	assert.Equal(t, "appliedDiff", tc.ToolName)
+	require.Len(t, tc.ResultEvents, 1)
+	assert.Equal(t, "errored", tc.ResultEvents[0].Status)
+	assert.Equal(t, "Search block not found in file", tc.ResultEvents[0].Content)
+}
