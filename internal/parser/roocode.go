@@ -503,7 +503,12 @@ func parseRooCodeMessages(
 				if pendingToolMsgIdx == pendingCmdMsgIdx {
 					pendingToolMsgIdx = -1
 				}
-				pendingCmdMsgIdx = -1
+				// Keep the command pending: RooCode streams long
+				// command output as multiple command_output entries,
+				// and a later chunk can carry the failure (exit
+				// status, error line). Each chunk appends its own
+				// result event; the stream ends when the next tool
+				// call arrives.
 				paired = true
 			}
 			if !paired && output != "" {
@@ -611,6 +616,18 @@ func parseRooCodeMessages(
 		}
 
 		if len(toolCalls) > 0 {
+			// A new tool call conclusively ends a command whose output
+			// stream has begun: later command_output entries belong to
+			// whatever runs next (or fall back to standalone), not to
+			// the finished command. A command with no output yet stays
+			// pending — its first output can legitimately trail other
+			// activity when the user proceeds while it runs.
+			if pendingCmdMsgIdx >= 0 && pendingCmdMsgIdx < len(parsedMessages) {
+				prior := parsedMessages[pendingCmdMsgIdx].ToolCalls
+				if len(prior) > 0 && len(prior[0].ResultEvents) > 0 {
+					pendingCmdMsgIdx = -1
+				}
+			}
 			// Emit assistant message with tool calls.
 			parsedMessages = append(parsedMessages, ParsedMessage{
 				Ordinal:       ordinal,

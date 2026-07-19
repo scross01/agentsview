@@ -2217,6 +2217,104 @@ func TestParseRooCodeSessionCommandOutputError(t *testing.T) {
 	assert.Contains(t, tc.ResultEvents[0].Content, "exit code 1")
 }
 
+func TestParseRooCodeSessionMultiPartCommandOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-cmdmulti")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-cmdmulti",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Multi-part command output test",
+		TokensIn:  10,
+		TokensOut: 5,
+		Workspace: "/Users/test/project",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Run tests",
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "ask",
+			Ask:       "command",
+			Text:      "npm test",
+		},
+		// Long-running commands stream output as multiple
+		// command_output entries; the failure arrives in the
+		// final chunk.
+		{
+			Timestamp: 1688836865000,
+			Type:      "say",
+			Say:       "command_output",
+			Text:      "Running suite A... ok",
+		},
+		{
+			Timestamp: 1688836870000,
+			Type:      "say",
+			Say:       "command_output",
+			Text:      "error: 2 tests failed with exit code 1",
+		},
+		// A new tool call ends the command's output stream.
+		{
+			Timestamp: 1688836875000,
+			Type:      "ask",
+			Ask:       "tool",
+			Text:      `{"tool":"readFile","path":"main.go"}`,
+		},
+		// Output arriving after the stream ended must not attach
+		// to the finished command.
+		{
+			Timestamp: 1688836880000,
+			Type:      "say",
+			Say:       "command_output",
+			Text:      "stray late chunk",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	sess, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	// user task + execute_command + readFile + standalone late
+	// chunk = 4: both streamed chunks pair into the tool call.
+	assert.Equal(t, 4, sess.MessageCount)
+
+	require.Len(t, msgs[1].ToolCalls, 1)
+	tc := msgs[1].ToolCalls[0]
+	assert.Equal(t, "execute_command", tc.ToolName)
+	require.Len(t, tc.ResultEvents, 2)
+	assert.Equal(t, "completed", tc.ResultEvents[0].Status)
+	assert.Equal(t, "Running suite A... ok", tc.ResultEvents[0].Content)
+	assert.Equal(t, "errored", tc.ResultEvents[1].Status,
+		"a failing final chunk must mark the command errored")
+	assert.Contains(t, tc.ResultEvents[1].Content, "exit code 1")
+
+	// The readFile call absorbed nothing from the command stream.
+	require.Len(t, msgs[2].ToolCalls, 1)
+	assert.Empty(t, msgs[2].ToolCalls[0].ResultEvents)
+
+	// The post-stream chunk fell back to a standalone message.
+	assert.Equal(t, "stray late chunk", msgs[3].Content)
+	assert.True(t, msgs[3].IsSystem)
+}
+
 func TestParseRooCodeSessionFileToolResult(t *testing.T) {
 	tmpDir := t.TempDir()
 	taskDir := filepath.Join(tmpDir, "tasks", "test-task-fileresult")
