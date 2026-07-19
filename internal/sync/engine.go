@@ -5685,6 +5685,22 @@ func (e *Engine) providerSourceFreshBeforeFingerprint(
 		if e.shouldSkipByPath(path, effectiveInfo) {
 			return mtime, true
 		}
+	case parser.AgentRooCode:
+		// RooCode's fingerprint is composite (history_item.json plus
+		// ui_messages.json) and content-hashes both files. The
+		// stat-only composite below matches the stored Size/Mtime the
+		// fingerprint stamps, so unchanged tasks skip without reading
+		// transcript bytes, and a sibling-only transcript append
+		// still changes the composite and falls through to the full
+		// fingerprint.
+		size, mtime := roocodeEffectiveStat(path, info)
+		effectiveInfo := fakeSnapshotInfo{
+			fSize:  size,
+			fMtime: mtime,
+		}
+		if e.shouldSkipByPath(path, effectiveInfo) {
+			return mtime, true
+		}
 	}
 	return 0, false
 }
@@ -6407,6 +6423,25 @@ func pickPreferredCodexDiscoveredFile(
 // copilotEffectiveMtime returns max(events.jsonl mtime,
 // workspace.yaml mtime). For flat .jsonl sessions (no
 // workspace.yaml sibling) it returns the events.jsonl mtime.
+// roocodeEffectiveStat returns the composite size and latest mtime of
+// a RooCode task's history_item.json and its ui_messages.json sibling
+// using stat calls only. The values mirror what
+// rooCodeFingerprintSource stamps on stored sessions (summed size,
+// max mtime), so a stat-only comparison against the stored row is
+// sufficient to detect any change to either file.
+func roocodeEffectiveStat(historyPath string, info os.FileInfo) (int64, int64) {
+	size := info.Size()
+	mtime := info.ModTime().UnixNano()
+	msgPath := filepath.Join(filepath.Dir(historyPath), "ui_messages.json")
+	if msgInfo, err := os.Stat(msgPath); err == nil && !msgInfo.IsDir() {
+		size += msgInfo.Size()
+		if ts := msgInfo.ModTime().UnixNano(); ts > mtime {
+			mtime = ts
+		}
+	}
+	return size, mtime
+}
+
 func copilotEffectiveMtime(eventsPath string, info os.FileInfo) int64 {
 	m := info.ModTime().UnixNano()
 	if filepath.Base(eventsPath) != "events.jsonl" {
