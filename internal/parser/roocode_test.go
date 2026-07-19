@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -3311,4 +3313,125 @@ func TestParseRooCodeSessionImageOnlyMessages(t *testing.T) {
 
 	// Both image-only messages count as user messages.
 	assert.Equal(t, 2, sess.UserMessageCount)
+}
+
+func TestParseRooCodeSessionEmptySubtaskResultResolvesNewTask(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-emptysubtask")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	// No CompletedByChildID: pairing must work from the transcript
+	// alone.
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-emptysubtask",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Empty subtask result test",
+		Workspace: "/Users/test/project",
+		Status:    "completed",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	// A child task that reports completion with no result text must
+	// still resolve the newTask delegation.
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Delegate the work",
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "ask",
+			Ask:       "tool",
+			Text:      `{"tool":"newTask","mode":"Code","content":"Implement it"}`,
+		},
+		{
+			Timestamp: 1688836870000,
+			Type:      "say",
+			Say:       "subtask_result",
+			Text:      "",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	sess, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	// user task + newTask call = 2; no standalone message for the
+	// empty result.
+	assert.Equal(t, 2, sess.MessageCount)
+
+	require.Len(t, msgs[1].ToolCalls, 1)
+	tc := msgs[1].ToolCalls[0]
+	assert.Equal(t, "newTask", tc.ToolName)
+	require.Len(t, tc.ResultEvents, 1)
+	assert.Equal(t, "completed", tc.ResultEvents[0].Status)
+	assert.Equal(t, "", tc.ResultEvents[0].Content)
+
+	// The resolved delegation must not read as orphaned.
+	assert.Equal(t, TerminationClean, sess.TerminationStatus)
+}
+
+func TestParseRooCodeSessionMultibyteSessionName(t *testing.T) {
+	tests := []struct {
+		name string
+		task string
+		want string
+	}{
+		{
+			// 100 runes / 200 bytes: must cut at a rune boundary,
+			// never mid-character.
+			name: "long multibyte name truncates on rune boundary",
+			task: strings.Repeat("é", 100),
+			want: strings.Repeat("é", 77) + "...",
+		},
+		{
+			// 40 runes / 120 bytes: over the byte threshold but
+			// short in characters — keep it whole.
+			name: "byte-heavy but short name stays intact",
+			task: strings.Repeat("日", 40),
+			want: strings.Repeat("日", 40),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			taskDir := filepath.Join(tmpDir, "tasks", "test-task-utf8name")
+			require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+			historyItem := rooCodeHistoryItem{
+				ID:        "test-task-utf8name",
+				Number:    1,
+				Timestamp: 1688836851000,
+				Task:      tt.task,
+				Workspace: "/Users/test/project",
+			}
+			historyJSON, err := json.Marshal(historyItem)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(
+				filepath.Join(taskDir, "history_item.json"),
+				historyJSON, 0644,
+			))
+
+			sess, _, err := parseRooCodeSession(taskDir, "", "")
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.want, sess.SessionName)
+			assert.True(t, utf8.ValidString(sess.SessionName),
+				"session name must remain valid UTF-8")
+		})
+	}
 }

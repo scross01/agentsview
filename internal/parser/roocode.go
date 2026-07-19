@@ -142,7 +142,7 @@ func parseRooCodeSession(
 		sessionName = firstMsg
 	}
 	if len(sessionName) > 80 {
-		sessionName = sessionName[:77] + "..."
+		sessionName = truncate(sessionName, 77)
 	}
 	if sessionName == "" {
 		sessionName = projectHint
@@ -738,7 +738,14 @@ func classifyRooCodeMessage(
 		// Result from a delegated child task. parseRooCodeMessages
 		// intercepts this say type and pairs it with the preceding
 		// newTask tool call; the standalone fallback is a system msg.
-		return RoleSystem, nil, nil
+		// Always return a result (even when empty) so an empty
+		// subtask_result still completes the delegation instead of
+		// leaving the newTask call pending.
+		output := strings.TrimSpace(msg.Text)
+		return RoleSystem, nil, []ParsedToolResult{{
+			ContentLength: len(output),
+			ContentRaw:    output,
+		}}
 	case "user_feedback", "user_feedback_diff":
 		// User feedback on the assistant's work.
 		return RoleUser, nil, nil
