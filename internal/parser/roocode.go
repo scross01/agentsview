@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -718,8 +719,15 @@ func classifyRooCodeMessage(
 		// Error and warning messages. Treat as system.
 		return RoleSystem, nil, nil
 	case "mcp_server_response":
-		// MCP server tool response.
-		return RoleSystem, nil, nil
+		// MCP server tool response. parseRooCodeMessages pairs this
+		// with the preceding use_mcp_server tool call. Always return
+		// a result (even when empty) so an empty-but-present response
+		// still completes the call instead of leaving it pending.
+		output := strings.TrimSpace(msg.Text)
+		return RoleSystem, nil, []ParsedToolResult{{
+			ContentLength: len(output),
+			ContentRaw:    output,
+		}}
 	case "condense_context", "condense_context_error",
 		"sliding_window_truncation":
 		// Context management events. Treat as system.
@@ -845,9 +853,12 @@ func resolveTrailingRooNewTask(messages []ParsedMessage) {
 	if len(messages) == 0 {
 		return
 	}
-	for i := len(messages) - 1; i >= 0; i-- {
-		tcs := messages[i].ToolCalls
-		for ci := len(tcs) - 1; ci >= 0; ci-- {
+	for _, v := range slices.Backward(messages) {
+		tcs := v.ToolCalls
+		for ci := range slices.Backward(tcs) {
+			// Take the element by index: v.ToolCalls shares its
+			// backing array with the original message, so this
+			// append is visible to the caller.
 			tc := &tcs[ci]
 			if tc.ToolName != "newTask" {
 				continue
@@ -868,8 +879,8 @@ func resolveTrailingRooNewTask(messages []ParsedMessage) {
 // tool calls. This is a strong signal that the session was
 // interrupted mid-thought.
 func rooLastMessageIsThinkingOnly(messages []ParsedMessage) bool {
-	for i := len(messages) - 1; i >= 0; i-- {
-		m := messages[i]
+	for _, v := range slices.Backward(messages) {
+		m := v
 		if m.IsSystem {
 			continue
 		}

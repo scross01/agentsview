@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -137,6 +138,75 @@ func TestParseRooCodeSessionMCPResponseNoPending(t *testing.T) {
 	assert.Equal(t, RoleSystem, msgs[1].Role)
 	assert.True(t, msgs[1].IsSystem)
 	assert.Equal(t, "Orphaned MCP response", msgs[1].Content)
+}
+
+func TestParseRooCodeSessionEmptyMCPResponsePairsCompleted(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-mcp-empty")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-mcp-empty",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Empty MCP response test",
+		Workspace: "/Users/test/project",
+		Status:    "completed",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	// An MCP tool whose response body is empty must still resolve
+	// the pending use_mcp_server call instead of leaving it pending.
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Trigger the webhook",
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "ask",
+			Ask:       "use_mcp_server",
+			Text:      `{"tool":"trigger","serverName":"hooks"}`,
+		},
+		{
+			Timestamp: 1688836870000,
+			Type:      "say",
+			Say:       "mcp_server_response",
+			Text:      "",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	sess, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	// user task + MCP tool call = 2; no standalone message for the
+	// empty response.
+	assert.Equal(t, 2, sess.MessageCount)
+
+	require.Len(t, msgs[1].ToolCalls, 1)
+	tc := msgs[1].ToolCalls[0]
+	require.Len(t, tc.ResultEvents, 1)
+	assert.Equal(t, "completed", tc.ResultEvents[0].Status)
+	assert.Equal(t, "", tc.ResultEvents[0].Content)
+	assert.True(t,
+		tc.ResultEvents[0].Timestamp.Equal(time.UnixMilli(1688836870000)),
+		"result event should carry the mcp_server_response timestamp")
+
+	// The resolved tool call must not read as orphaned.
+	assert.Equal(t, TerminationClean, sess.TerminationStatus)
 }
 
 func TestRooCodeIsMetadataSayIncludesMCP(t *testing.T) {
