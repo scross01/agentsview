@@ -211,6 +211,49 @@ func TestClassify(t *testing.T) {
 			stopReason: "task_complete",
 			want:       TerminationClean,
 		},
+		{
+			// Regression: a Codex wait call that only received a
+			// "running" subagent progress notification has not
+			// finished — the streamed event must not resolve it.
+			name: "tool_call_pending: running-only result event keeps call pending",
+			messages: []ParsedMessage{
+				{Role: RoleUser, Content: "spawn and wait"},
+				{Role: RoleAssistant, ToolCalls: []ParsedToolCall{
+					{ToolUseID: "call_wait", ToolName: "wait", ResultEvents: []ParsedToolResultEvent{
+						{Status: "running", Content: "agent is working"},
+					}},
+				}},
+			},
+			stopReason: "tool_use",
+			want:       TerminationToolCallPending,
+		},
+		{
+			name: "terminal result event after running resolves the call",
+			messages: []ParsedMessage{
+				{Role: RoleUser, Content: "spawn and wait"},
+				{Role: RoleAssistant, ToolCalls: []ParsedToolCall{
+					{ToolUseID: "call_wait", ToolName: "wait", ResultEvents: []ParsedToolResultEvent{
+						{Status: "running", Content: "agent is working"},
+						{Status: "completed", Content: "agent finished"},
+					}},
+				}},
+			},
+			stopReason: "task_complete",
+			want:       TerminationAwaitingUser,
+		},
+		{
+			// Plain function_call_output events carry no status but
+			// are actual output — they resolve the call.
+			name: "statusless output event resolves the call",
+			messages: []ParsedMessage{
+				{Role: RoleAssistant, ToolCalls: []ParsedToolCall{
+					{ToolUseID: "call_out", ToolName: "shell", ResultEvents: []ParsedToolResultEvent{
+						{Status: "", Content: "exit 0"},
+					}},
+				}},
+			},
+			want: TerminationClean,
+		},
 	}
 
 	for _, tc := range tests {
