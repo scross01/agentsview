@@ -104,11 +104,39 @@ func buildResolveScript() string {
 			"done; " +
 			"done; " +
 			"}\n" +
+			// RooCode's root is VSCode's whole globalStorage extension
+			// directory, which also holds settings/mcp_settings.json
+			// (MCP env vars, API keys), caches, and checkpoints. Emit
+			// only discovered per-task session files, never the raw
+			// directory, mirroring remotesync.resolveRooCodeTarget.
+			"av_emit_roocode_target() { " +
+			"target=\"$1\"; " +
+			"case \"$target\" in */) target=\"${target%/}\";; esac; " +
+			"av_roo_tasks=\"$target/tasks\"; " +
+			"[ -d \"$av_roo_tasks\" ] || return; " +
+			"av_roocode_root_emitted=0; " +
+			"for av_roo_task in \"$av_roo_tasks\"/*; do " +
+			"[ -d \"$av_roo_task\" ] || continue; " +
+			"case \"${av_roo_task##*/}\" in _*) continue;; esac; " +
+			"av_roo_history=\"$av_roo_task/history_item.json\"; " +
+			"[ -f \"$av_roo_history\" ] || continue; " +
+			"if [ \"$av_roocode_root_emitted\" -eq 0 ]; then " +
+			"printf '%s\\000' \"" + string(parser.AgentRooCode) + ":$target\"; " +
+			"av_roocode_root_emitted=1; " +
+			"fi; " +
+			"av_emit_agent_file \"" + string(parser.AgentRooCode) + "\" \"$av_roo_history\"; " +
+			"av_emit_agent_file \"" + string(parser.AgentRooCode) + "\" \"$av_roo_task/ui_messages.json\"; " +
+			"done; " +
+			"}\n" +
 			"av_emit_target() { " +
 			"agent=\"$1\"; " +
 			"target=\"$2\"; " +
 			"if [ \"$agent\" = \"" + string(parser.AgentWindsurf) + "\" ]; then " +
 			"av_emit_windsurf_target \"$target\"; " +
+			"return; " +
+			"fi; " +
+			"if [ \"$agent\" = \"" + string(parser.AgentRooCode) + "\" ]; then " +
+			"av_emit_roocode_target \"$target\"; " +
 			"return; " +
 			"fi; " +
 			"[ -d \"$target\" ] && printf '%s\\000' \"$agent:$target\"; " +

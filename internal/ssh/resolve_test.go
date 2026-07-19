@@ -374,3 +374,75 @@ func TestParseResolvedTargetsIncludesAgentFiles(t *testing.T) {
 	assert.Equal(t,
 		[]string{"/home/wes/.codex/session_index.jsonl"}, extraFiles)
 }
+
+func TestResolveScriptRooCodeTargetsOnlySessionFiles(t *testing.T) {
+	home := t.TempDir()
+	rooRoot := filepath.Join(home, ".config", "Code", "User",
+		"globalStorage", "rooveterinaryinc.roo-cline")
+	task1 := filepath.Join(rooRoot, "tasks", "task-1")
+	task2 := filepath.Join(rooRoot, "tasks", "task-2")
+	metaDir := filepath.Join(rooRoot, "tasks", "_meta")
+	settingsDir := filepath.Join(rooRoot, "settings")
+	checkpoints := filepath.Join(task1, "checkpoints")
+	require.NoError(t, os.MkdirAll(task1, 0o755))
+	require.NoError(t, os.MkdirAll(task2, 0o755))
+	require.NoError(t, os.MkdirAll(metaDir, 0o755))
+	require.NoError(t, os.MkdirAll(settingsDir, 0o755))
+	require.NoError(t, os.MkdirAll(checkpoints, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(task1, "history_item.json"), []byte(`{"id":"task-1"}`), 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(task1, "ui_messages.json"), []byte(`[]`), 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(task2, "history_item.json"), []byte(`{"id":"task-2"}`), 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(settingsDir, "mcp_settings.json"),
+		[]byte(`{"mcpServers":{"s":{"env":{"API_KEY":"sk-secret"}}}}`), 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(checkpoints, "checkpoint.bin"), []byte("checkpoint"), 0o644))
+
+	out := runResolveScriptForTest(t, "HOME="+home)
+
+	records := resolveOutputRecords(string(out))
+	rootSuffix := filepath.ToSlash(filepath.Join(".config", "Code", "User",
+		"globalStorage", "rooveterinaryinc.roo-cline"))
+	agentFilePrefix := resolveAgentFilePrefix + ":" + string(parser.AgentRooCode)
+	assert.True(t, hasRecordWithPathSuffix(records,
+		string(parser.AgentRooCode), rootSuffix),
+		"root must be emitted once as the agent target")
+	assert.True(t, hasRecordWithPathSuffix(records, agentFilePrefix,
+		"tasks/task-1/history_item.json"))
+	assert.True(t, hasRecordWithPathSuffix(records, agentFilePrefix,
+		"tasks/task-1/ui_messages.json"))
+	assert.True(t, hasRecordWithPathSuffix(records, agentFilePrefix,
+		"tasks/task-2/history_item.json"))
+	// task-2 has no ui_messages.json; av_emit_agent_file skips it.
+	assert.False(t, hasRecordWithPathSuffix(records, agentFilePrefix,
+		"tasks/task-2/ui_messages.json"))
+	for _, record := range records {
+		assert.NotContains(t, record, "mcp_settings.json",
+			"settings must never be emitted")
+		assert.NotContains(t, record, "checkpoint",
+			"checkpoint data must never be emitted")
+		assert.NotContains(t, record, "_meta",
+			"underscore-prefixed task dirs must be skipped")
+	}
+}
+
+func TestResolveScriptRooCodeSkipsRootWithoutSessions(t *testing.T) {
+	home := t.TempDir()
+	rooRoot := filepath.Join(home, ".config", "Code", "User",
+		"globalStorage", "rooveterinaryinc.roo-cline")
+	settingsDir := filepath.Join(rooRoot, "settings")
+	require.NoError(t, os.MkdirAll(settingsDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(settingsDir, "mcp_settings.json"),
+		[]byte(`{"mcpServers":{}}`), 0o644))
+
+	out := runResolveScriptForTest(t, "HOME="+home)
+
+	for _, record := range resolveOutputRecords(string(out)) {
+		assert.NotContains(t, record, "roo-cline",
+			"a session-less RooCode root must emit nothing")
+	}
+}
