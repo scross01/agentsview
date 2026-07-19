@@ -23,13 +23,33 @@ type TargetSet struct {
 	ExtraFiles []string                      `json:"extra_files,omitempty"`
 }
 
-// HasFileScopedAgents reports whether any agent exports a curated,
-// possibly sanitized file list (Windsurf) rather than a raw directory
-// walk. The manifest/delta incremental path has no way to model the
-// full-archive writer's per-agent sanitization, so these targets only
-// ever travel through the full-archive flow.
+// HasFileScopedAgents reports whether any agent exports a curated
+// file list rather than a raw directory walk.
 func (t TargetSet) HasFileScopedAgents() bool {
 	return len(t.Files) > 0
+}
+
+// verbatimFileScopedAgent reports whether a file-scoped agent's
+// curated files are exported byte-for-byte by WriteArchive. Verbatim
+// agents (RooCode) can ride the manifest/delta path: the manifest
+// advertises exactly the files the archive streams, so one changed
+// transcript transfers alone. Sanitizing agents (Windsurf rewrites
+// its state DB) must stay on the full-archive flow, and new
+// file-scoped agents default to sanitized until added here.
+func verbatimFileScopedAgent(agent parser.AgentType) bool {
+	return agent == parser.AgentRooCode
+}
+
+// HasSanitizedFileScopedAgents reports whether any agent's export is
+// file-scoped and transformed relative to the on-disk tree, which the
+// manifest/delta path cannot model.
+func (t TargetSet) HasSanitizedFileScopedAgents() bool {
+	for agent := range t.Files {
+		if !verbatimFileScopedAgent(agent) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsEmpty reports whether the set names no sync targets at all.
@@ -38,15 +58,15 @@ func (t TargetSet) IsEmpty() bool {
 }
 
 // SplitFileScoped partitions the set into the targets the
-// manifest/delta path can model (raw directory walks plus extra files)
-// and the file-scoped agents whose exports are curated and possibly
-// sanitized (Windsurf). The dir-scoped half syncs incrementally via
-// the mirror delta; the file-scoped half is fetched as a separate
-// small full archive every sync, so a host with Windsurf sessions no
-// longer drags its whole corpus onto the full-archive path.
+// manifest/delta path can model and the sanitized file-scoped agents
+// (Windsurf) whose exports differ from the on-disk tree. The
+// dir-scoped half — including verbatim file-scoped agents like
+// RooCode, whose curated files the manifest advertises directly —
+// syncs incrementally via the mirror delta; the sanitized half is
+// fetched as a separate small full archive every sync.
 func (t TargetSet) SplitFileScoped() (dirScoped, fileScoped TargetSet) {
 	for agent, dirs := range t.Dirs {
-		if _, ok := t.Files[agent]; ok {
+		if _, ok := t.Files[agent]; ok && !verbatimFileScopedAgent(agent) {
 			if fileScoped.Dirs == nil {
 				fileScoped.Dirs = make(map[parser.AgentType][]string)
 			}
@@ -58,23 +78,40 @@ func (t TargetSet) SplitFileScoped() (dirScoped, fileScoped TargetSet) {
 		}
 		dirScoped.Dirs[agent] = dirs
 	}
-	fileScoped.Files = t.Files
+	for agent, files := range t.Files {
+		target := &fileScoped
+		if verbatimFileScopedAgent(agent) {
+			target = &dirScoped
+		}
+		if target.Files == nil {
+			target.Files = make(map[parser.AgentType][]string)
+		}
+		target.Files[agent] = files
+	}
 	dirScoped.ExtraFiles = t.ExtraFiles
 	return dirScoped, fileScoped
 }
 
 // DeltaAllowedRoots returns the trusted base paths a delta-archive file
-// may resolve under: every non-file-scoped agent directory plus the
-// extra files. File-scoped agents (Windsurf) are excluded because
-// their raw tree is never delta-streamed. WriteArchiveFiles re-checks
-// each requested file against these roots before reading it.
+// may resolve under: every non-file-scoped agent directory, the
+// verbatim file-scoped agents' curated files (exact matches only —
+// their raw directory is never a prefix root, so settings and caches
+// stay unreachable), plus the extra files. Sanitized file-scoped
+// agents (Windsurf) contribute nothing because their raw tree is
+// never delta-streamed. WriteArchiveFiles re-checks each requested
+// file against these roots before reading it.
 func (t TargetSet) DeltaAllowedRoots() []string {
-	roots := make([]string, 0, len(t.Dirs)+len(t.ExtraFiles))
+	roots := make([]string, 0, len(t.Dirs)+len(t.Files)+len(t.ExtraFiles))
 	for agent, dirs := range t.Dirs {
 		if _, fileScoped := t.Files[agent]; fileScoped {
 			continue
 		}
 		roots = append(roots, dirs...)
+	}
+	for agent, files := range t.Files {
+		if verbatimFileScopedAgent(agent) {
+			roots = append(roots, files...)
+		}
 	}
 	roots = append(roots, t.ExtraFiles...)
 	return roots

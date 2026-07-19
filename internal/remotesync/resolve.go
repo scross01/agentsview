@@ -307,6 +307,17 @@ func selectAllowedFile(allowed TargetSet, file string) (string, bool) {
 	if canonical, ok := selectAllowedString(allowed.ExtraFiles, file); ok {
 		return canonical, true
 	}
+	for agent, files := range allowed.Files {
+		if !verbatimFileScopedAgent(agent) {
+			continue
+		}
+		// Verbatim file-scoped agents (RooCode) delta-stream exactly
+		// their curated files; the exact-match requirement keeps
+		// settings and caches under their directory unreachable.
+		if canonical, ok := selectAllowedString(files, file); ok {
+			return canonical, true
+		}
+	}
 	if !isAbsRemotePath(file) {
 		return "", false
 	}
@@ -315,13 +326,14 @@ func selectAllowedFile(allowed TargetSet, file string) (string, bool) {
 	}
 	for agent, dirs := range allowed.Dirs {
 		if _, fileScoped := allowed.Files[agent]; fileScoped {
-			// File-scoped agents (Windsurf) export a curated, sanitized
-			// file list, not a raw directory walk. Accepting a delta
-			// request by directory prefix would stream the raw file
-			// (e.g. an unsanitized state.vscdb or a secret) that the
-			// full-archive writer never exposes. Such agents fall back
-			// to the full-archive flow, so a legitimate client never
-			// requests these as deltas.
+			// File-scoped agents export a curated file list, not a raw
+			// directory walk. Accepting a delta request by directory
+			// prefix would stream a raw file (an unsanitized
+			// state.vscdb, an mcp_settings.json secret) that the
+			// archive writer never exposes. Verbatim agents already
+			// matched by exact file above; sanitized agents (Windsurf)
+			// fall back to the full-archive flow, so a legitimate
+			// client never requests these as deltas.
 			continue
 		}
 		for _, dir := range dirs {

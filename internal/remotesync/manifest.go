@@ -28,14 +28,17 @@ type Manifest struct {
 // files are excluded, matching WriteArchive. Missing roots and extra
 // files are tolerated: sync races against live agents deleting files.
 //
-// File-scoped agents (Windsurf) are rejected: their raw directory tree
-// differs from the sanitized subset WriteArchive streams, so a manifest
-// of the raw walk would advertise files the full archive never exports.
-// Callers must route such targets through the full-archive flow.
+// Sanitized file-scoped agents (Windsurf) are rejected: their raw
+// directory tree differs from the sanitized subset WriteArchive
+// streams, so a manifest of the raw walk would advertise files the
+// full archive never exports. Callers must route such targets through
+// the full-archive flow. Verbatim file-scoped agents (RooCode) are
+// listed by their curated files instead of a raw walk — the manifest
+// never advertises settings or caches under their directory roots.
 func BuildManifest(targets TargetSet) (Manifest, error) {
-	if targets.HasFileScopedAgents() {
+	if targets.HasSanitizedFileScopedAgents() {
 		return Manifest{}, fmt.Errorf(
-			"manifest not supported for file-scoped agents")
+			"manifest not supported for sanitized file-scoped agents")
 	}
 	m := Manifest{Files: []ManifestEntry{}}
 	add := func(path string, info os.FileInfo) {
@@ -45,23 +48,39 @@ func BuildManifest(targets TargetSet) (Manifest, error) {
 			MtimeNS: info.ModTime().UnixNano(),
 		})
 	}
-	for _, dirs := range targets.Dirs {
+	addLstat := func(path string) error {
+		info, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("stat manifest file %q: %w", path, err)
+		}
+		if info.Mode().IsRegular() {
+			add(path, info)
+		}
+		return nil
+	}
+	for agent, dirs := range targets.Dirs {
+		if _, fileScoped := targets.Files[agent]; fileScoped {
+			continue
+		}
 		for _, root := range dirs {
 			if err := manifestWalk(root, add); err != nil {
 				return Manifest{}, err
 			}
 		}
 	}
-	for _, path := range targets.ExtraFiles {
-		info, err := os.Lstat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
+	for _, files := range targets.Files {
+		for _, path := range files {
+			if err := addLstat(path); err != nil {
+				return Manifest{}, err
 			}
-			return Manifest{}, fmt.Errorf("stat manifest file %q: %w", path, err)
 		}
-		if info.Mode().IsRegular() {
-			add(path, info)
+	}
+	for _, path := range targets.ExtraFiles {
+		if err := addLstat(path); err != nil {
+			return Manifest{}, err
 		}
 	}
 	sort.Slice(m.Files, func(i, j int) bool {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/parser"
 	syncpkg "go.kenn.io/agentsview/internal/sync"
@@ -824,16 +825,16 @@ func newMirrorTestRemote(t *testing.T) *mirrorTestRemote {
 				return
 			}
 			// Mirror the real handler: build the manifest from the
-			// requested targets and refuse file-scoped agents.
+			// requested targets; BuildManifest itself refuses targets
+			// the manifest cannot model, which the handler surfaces as
+			// 501 so the client falls back to the full archive.
 			var req TargetSet
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
-			if req.HasFileScopedAgents() {
-				http.Error(w, "manifest unavailable for file-scoped agents",
-					http.StatusNotImplemented)
+			manifest, err := BuildManifest(req)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotImplemented)
 				return
 			}
-			manifest, err := BuildManifest(req)
-			require.NoError(t, err)
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Content-Encoding", "gzip")
 			gz := gzip.NewWriter(w)
@@ -1172,6 +1173,101 @@ func TestHTTPSyncMirrorPartitionsFileScopedAgents(t *testing.T) {
 	assert.NoFileExists(t, scopedLocal)
 	assert.Len(t, remote.archiveRequests, 4,
 		"no archive requests when nothing changed and no file-scoped targets remain")
+}
+
+// addRooCodeAgent writes a RooCode globalStorage tree with taskCount
+// tasks plus an mcp_settings.json secret, registers the resolved
+// verbatim file-scoped targets on the remote, and returns the settings
+// path and the per-task ui_messages.json transcripts.
+func (r *mirrorTestRemote) addRooCodeAgent(
+	t *testing.T, taskCount int, mtime time.Time,
+) (string, []string) {
+	t.Helper()
+	rooRoot := filepath.Join(filepath.Dir(r.dir), "roo-cline")
+	transcripts := make([]string, 0, taskCount)
+	for i := range taskCount {
+		taskDir := filepath.Join(rooRoot, "tasks", fmt.Sprintf("task-%d", i))
+		require.NoError(t, os.MkdirAll(taskDir, 0o755))
+		history := filepath.Join(taskDir, "history_item.json")
+		require.NoError(t, os.WriteFile(history, fmt.Appendf(nil,
+			`{"id":"task-%d","ts":1720000000000,"task":"task %d"}`, i, i), 0o644))
+		messages := filepath.Join(taskDir, "ui_messages.json")
+		require.NoError(t, os.WriteFile(messages, fmt.Appendf(nil,
+			`[{"ts":1720000000000,"type":"say","say":"text","text":"hello %d"}]`,
+			i), 0o644))
+		require.NoError(t, os.Chtimes(history, mtime, mtime))
+		require.NoError(t, os.Chtimes(messages, mtime, mtime))
+		transcripts = append(transcripts, messages)
+	}
+	settingsDir := filepath.Join(rooRoot, "settings")
+	require.NoError(t, os.MkdirAll(settingsDir, 0o755))
+	mcpSettings := filepath.Join(settingsDir, "mcp_settings.json")
+	require.NoError(t, os.WriteFile(mcpSettings,
+		[]byte(`{"mcpServers":{"s":{"env":{"API_KEY":"sk-secret"}}}}`), 0o644))
+	resolved := ResolveTargets(config.Config{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentRooCode: {rooRoot},
+		},
+	})
+	r.targets.Dirs[parser.AgentRooCode] = resolved.Dirs[parser.AgentRooCode]
+	if r.targets.Files == nil {
+		r.targets.Files = make(map[parser.AgentType][]string)
+	}
+	r.targets.Files[parser.AgentRooCode] = resolved.Files[parser.AgentRooCode]
+	return mcpSettings, transcripts
+}
+
+// RooCode is verbatim file-scoped: its curated files ride the
+// manifest/delta path, so an appended transcript transfers alone
+// instead of re-downloading the whole RooCode archive every sync, and
+// the raw tree (mcp_settings.json secrets) still never leaves the
+// remote.
+func TestHTTPSyncMirrorRooCodeDeltaTransfersOnlyChangedTranscript(t *testing.T) {
+	remote := newMirrorTestRemote(t)
+	base := time.Date(2026, 7, 8, 10, 0, 0, 123456789, time.UTC)
+	mcpSettings, transcripts := remote.addRooCodeAgent(t, 4, base)
+	dataDir := t.TempDir()
+	_, hs := newMirrorSync(t, remote, dataDir)
+
+	stats, err := hs.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 4, stats.SessionsSynced)
+	// Bootstrap: one full archive, and no recurring file-scoped
+	// side-channel archive for a verbatim agent.
+	require.Len(t, remote.archiveRequests, 1)
+	assert.Nil(t, remote.archiveRequests[0].DeltaFiles)
+
+	mirrorRoot := MirrorDir(dataDir, "devbox")
+	mirroredTranscript, err := safeRemappedRemotePath(mirrorRoot, transcripts[0])
+	require.NoError(t, err)
+	assert.FileExists(t, mirroredTranscript)
+	mirroredSettings, err := safeRemappedRemotePath(mirrorRoot, mcpSettings)
+	require.NoError(t, err)
+	assert.NoFileExists(t, mirroredSettings,
+		"mcp_settings.json must never reach the mirror")
+
+	// Append to one transcript: the delta request names exactly that
+	// file — not the other tasks, not a full RooCode archive.
+	changed := transcripts[0]
+	require.NoError(t, os.WriteFile(changed, []byte(
+		`[{"ts":1720000000000,"type":"say","say":"text","text":"hello 0"},`+
+			`{"ts":1720000005000,"type":"say","say":"text","text":"continued"}]`,
+	), 0o644))
+	require.NoError(t, os.Chtimes(changed,
+		base.Add(5*time.Second), base.Add(5*time.Second)))
+
+	stats, err = hs.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.SessionsSynced)
+	require.Len(t, remote.archiveRequests, 2)
+	assert.Equal(t, []string{changed}, remote.archiveRequests[1].DeltaFiles)
+
+	// Nothing changed: no archive request at all, so per-poll transfer
+	// work is bounded by the changed batch, not the archive size.
+	stats, err = hs.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 0, stats.SessionsSynced)
+	assert.Len(t, remote.archiveRequests, 2)
 }
 
 // The mirror lock must already be held when the manifest is fetched:

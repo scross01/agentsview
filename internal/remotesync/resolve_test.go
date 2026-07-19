@@ -461,6 +461,46 @@ func TestRooCodeRemoteSyncExportsOnlySessionFiles(t *testing.T) {
 	_, ok = remotesync.SelectAllowedFiles(targets, []string{checkpointBlob})
 	assert.False(t, ok, "checkpoint data under the RooCode root must be rejected")
 	assert.NotContains(t, targets.DeltaAllowedRoots(), rooRoot)
+
+	// The export is verbatim, so the curated files ride the
+	// manifest/delta path: the manifest lists exactly them, they are
+	// valid delta requests and delta roots, and no separate per-sync
+	// full archive remains (the file-scoped split is empty).
+	manifest, err := remotesync.BuildManifest(targets)
+	require.NoError(t, err)
+	manifestPaths := make([]string, 0, len(manifest.Files))
+	for _, entry := range manifest.Files {
+		manifestPaths = append(manifestPaths, entry.Path)
+	}
+	assert.ElementsMatch(t, []string{
+		task1History,
+		task1Messages,
+		task2History,
+	}, manifestPaths)
+
+	dirScoped, fileScoped := targets.SplitFileScoped()
+	assert.True(t, fileScoped.IsEmpty(),
+		"a verbatim agent must not fall back to per-sync full archives")
+	assert.Equal(t, targets.Files, dirScoped.Files)
+
+	files, ok := remotesync.SelectAllowedFiles(targets, []string{task1Messages})
+	require.True(t, ok, "a curated transcript must validate as a delta request")
+	var delta bytes.Buffer
+	require.NoError(t, remotesync.WriteArchiveFiles(
+		&delta, targets.DeltaAllowedRoots(), files))
+	deltaNames := []string{}
+	dr := tar.NewReader(&delta)
+	for {
+		hdr, err := dr.Next()
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err)
+		deltaNames = append(deltaNames, hdr.Name)
+	}
+	require.Len(t, deltaNames, 1,
+		"one changed transcript must transfer alone")
+	assert.Contains(t, deltaNames[0], "task-1/ui_messages.json")
 }
 
 func TestRooCodeRemoteSyncSkipsRootWithoutSessions(t *testing.T) {
