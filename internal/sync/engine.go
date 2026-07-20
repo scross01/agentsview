@@ -99,8 +99,12 @@ type EngineConfig struct {
 
 // Engine orchestrates session file discovery and sync.
 type Engine struct {
-	db                      *db.DB
-	openCodeArchiveStore    db.Store
+	db *db.DB
+	// archiveStore is the database holding previously archived
+	// sessions for the preserve guards in prepareSessionWrite.
+	// During a resync/rebuild it points at the original DB while
+	// e.db points at the fresh one; nil means e.db is the archive.
+	archiveStore            db.Store
 	agentDirs               map[parser.AgentType][]string
 	machine                 string
 	blockedResultCategories map[string]bool
@@ -1469,7 +1473,7 @@ func (e *Engine) resyncAllWithOptionsLocked(
 	// its first syncing event, and on a large archive that walk takes
 	// minutes. Without this marker the progress printer credits that
 	// silent time to the preceding (instant) "Disabling ..." phase.
-	e.openCodeArchiveStore = origDB
+	e.archiveStore = origDB
 	e.db = newDB
 	reportResyncPhase(
 		PhaseDiscovering,
@@ -1480,7 +1484,7 @@ func (e *Engine) resyncAllWithOptionsLocked(
 		ctx, reportResyncProgress, time.Time{}, nil, syncWriteBulk, true, false,
 	)
 	e.db = origDB // restore immediately
-	e.openCodeArchiveStore = nil
+	e.archiveStore = nil
 	e.phaseStats.Log("resync")
 	if opts.includePhaseDiagnostics {
 		stats.RebuildPhases = append(stats.RebuildPhases,
@@ -1507,7 +1511,7 @@ func (e *Engine) resyncAllWithOptionsLocked(
 
 	for contributorIndex, contributor := range opts.Contributors {
 		contributorEngine := NewEngine(newDB, contributor.Config)
-		contributorEngine.openCodeArchiveStore = origDB
+		contributorEngine.archiveStore = origDB
 		contributorProgress := func(p Progress) {
 			if contributor.Progress != nil {
 				p = contributor.Progress(p)
@@ -7011,6 +7015,9 @@ func (e *Engine) prepareSessionWrite(
 	) {
 		return db.Session{}, nil, sessionWritePreserved
 	}
+	if e.shouldPreserveRooCodeArchive(pw.sess.Agent, s.ID, msgs) {
+		return db.Session{}, nil, sessionWritePreserved
+	}
 	if mergedMsgs, preserve, archived := e.reconcileVisualStudioCopilotArchive(
 		pw.sess.Agent, s.ID, pw.sess.File.Size, msgs,
 	); preserve {
@@ -8221,6 +8228,11 @@ func shouldReplaceFullParseMessages(
 		// only add the new ordinals and leave the existing tool call's
 		// result_content empty, so force a full replace.
 		pw.sess.Agent == parser.AgentVibe ||
+		// RooCode pairs later command_output, MCP response, subtask
+		// result, and error records back to earlier tool-call
+		// messages, and strips embedded read results into them. An
+		// append would leave the existing rows' result events stale.
+		pw.sess.Agent == parser.AgentRooCode ||
 		pw.sess.Agent == parser.AgentReasonix
 }
 
@@ -8493,6 +8505,37 @@ func (e *Engine) writeSessionFullWithResolver(
 	return nil
 }
 
+// shouldPreserveRooCodeArchive reports whether a zero-message RooCode
+// parse must not overwrite an archived transcript. A vanished (or
+// torn) ui_messages.json parses as a zero-message session while
+// history_item.json keeps the task discoverable, so writing that
+// parse would corrupt the session's counts on normal sync and — with
+// RooCode on the full-replace path — delete the archived messages
+// outright; on a rebuild it would recreate the session empty in the
+// fresh DB, which also blocks the orphan-copy pass from restoring it.
+// Newly created metadata-only tasks have no archived messages and
+// still write normally.
+func (e *Engine) shouldPreserveRooCodeArchive(
+	agent parser.AgentType, sessionID string, msgs []db.Message,
+) bool {
+	if agent != parser.AgentRooCode || len(msgs) > 0 {
+		return false
+	}
+	store := e.archiveStore
+	if store == nil {
+		store = e.db
+	}
+	stored, err := store.GetAllMessages(context.Background(), sessionID)
+	if err != nil || len(stored) == 0 {
+		return false
+	}
+	log.Printf(
+		"skip roocode session %s: transcript parsed empty but archive has %d messages",
+		sessionID, len(stored),
+	)
+	return true
+}
+
 func (e *Engine) shouldPreserveOpenCodeFormatArchive(
 	agent parser.AgentType, path, sessionID string,
 	currentMtime int64,
@@ -8502,7 +8545,7 @@ func (e *Engine) shouldPreserveOpenCodeFormatArchive(
 	if !isOpenCodeFormatStorageAgent(agent) {
 		return false
 	}
-	store := e.openCodeArchiveStore
+	store := e.archiveStore
 	if store == nil {
 		store = e.db
 	}
