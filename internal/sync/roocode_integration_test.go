@@ -3,6 +3,7 @@ package sync
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -12,13 +13,16 @@ import (
 	"go.kenn.io/agentsview/internal/parser"
 )
 
-// TestSourceMtimeRooCodeUsesProviderFingerprint confirms that the
-// session-watch fallback observes ui_messages.json updates. RooCode
-// freshness spans both history_item.json and ui_messages.json, so a
-// plain stat of the stored history_item.json path would miss transcript
-// updates. SourceMtime must route through the provider fingerprint,
-// which composes both files, and return the newer ui_messages.json mtime.
-func TestSourceMtimeRooCodeUsesProviderFingerprint(t *testing.T) {
+// TestSourceMtimeRooCodeUsesCompositeStat confirms that the
+// session-watch fallback observes ui_messages.json updates without
+// reading either file. RooCode freshness spans both history_item.json
+// and ui_messages.json, so a plain stat of the stored
+// history_item.json path would miss transcript updates — but the
+// watcher polls SourceMtime continuously, so routing through the
+// content-hashing provider fingerprint would re-read whole transcripts
+// every poll. SourceMtime must return the newer ui_messages.json mtime
+// from stat information alone.
+func TestSourceMtimeRooCodeUsesCompositeStat(t *testing.T) {
 	database := openTestDB(t)
 	root := t.TempDir()
 	engine := NewEngine(database, EngineConfig{
@@ -47,6 +51,18 @@ func TestSourceMtimeRooCodeUsesProviderFingerprint(t *testing.T) {
 	messagesTime := historyTime.Add(5 * time.Minute)
 	require.NoError(t, os.Chtimes(historyPath, historyTime, historyTime))
 	require.NoError(t, os.Chtimes(messagesPath, messagesTime, messagesTime))
+
+	if runtime.GOOS != "windows" {
+		// The lookup must be stat-only: make the contents unreadable so
+		// any attempt to hash them fails loudly (SourceMtime returns 0
+		// when the fingerprint errors).
+		require.NoError(t, os.Chmod(historyPath, 0o000))
+		require.NoError(t, os.Chmod(messagesPath, 0o000))
+		t.Cleanup(func() {
+			_ = os.Chmod(historyPath, 0o644)
+			_ = os.Chmod(messagesPath, 0o644)
+		})
+	}
 
 	assert.Equal(
 		t,

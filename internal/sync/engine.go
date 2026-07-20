@@ -9255,12 +9255,10 @@ func providerSourceMtimeNeedsFingerprint(agent parser.AgentType) bool {
 	case parser.AgentQoder:
 		// Qoder stores a sidecar whose mtime the plain path stat misses.
 		return true
-	case parser.AgentRooCode:
-		// RooCode freshness spans history_item.json and ui_messages.json.
-		// The stored path is history_item.json, so a plain stat misses
-		// ui_messages.json updates; the provider fingerprint composes both.
-		return true
 	default:
+		// RooCode is deliberately absent: its fingerprint content-hashes
+		// both session files, and SourceMtime is polled by the session
+		// watcher, so it uses the stat-only composite branch instead.
 		return false
 	}
 }
@@ -9379,6 +9377,18 @@ func (e *Engine) SourceMtime(sessionID string) int64 {
 		if err != nil {
 			return 0
 		}
+		return mtime
+	}
+	if def.Type == parser.AgentRooCode {
+		// Freshness spans history_item.json (the stored path) plus its
+		// sibling ui_messages.json. The session watcher polls
+		// SourceMtime, so this must stay stat-only — content hashing
+		// is reserved for the sync fingerprint.
+		info, err := os.Stat(path)
+		if err != nil {
+			return 0
+		}
+		_, mtime := roocodeEffectiveStat(path, info)
 		return mtime
 	}
 	if def.Type == parser.AgentKiro {

@@ -32,7 +32,11 @@ func WriteArchive(w io.Writer, targets TargetSet) error {
 			continue
 		}
 		for _, path := range files {
-			if err := writeArchivePath(tw, path); err != nil {
+			// Curated verbatim files (RooCode) are tolerated when
+			// missing: the archive races live agents deleting tasks,
+			// and validation deliberately authorizes session-shaped
+			// files that vanished after target resolution.
+			if err := writeOptionalArchivePath(tw, path); err != nil {
 				return err
 			}
 		}
