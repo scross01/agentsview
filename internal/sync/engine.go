@@ -3218,6 +3218,22 @@ func (e *Engine) discoveredFileEffectiveMtime(
 	if isS3SourcePath(file.Path) {
 		return discoveredFileMtime(file)
 	}
+	// RooCode is excluded from the provider-Fingerprint path for cost, not
+	// correctness: its Fingerprint content-hashes history_item.json plus
+	// ui_messages.json, so consulting it here would read every task's full
+	// transcript on each incremental sync, scaling cutoff filtering with
+	// the archive instead of the changed batch. The stat-only composite
+	// carries the same cutoff signal — the max mtime of both files — so a
+	// sibling-only transcript append still looks fresh. Sources that pass
+	// the cutoff go on to the full fingerprint as usual.
+	if file.Agent == parser.AgentRooCode {
+		info, err := os.Stat(file.Path)
+		if err != nil {
+			return 0, err
+		}
+		_, mtime := roocodeEffectiveStat(file.Path, info)
+		return mtime, nil
+	}
 	// Provider-authoritative sources resolve freshness through the provider
 	// Fingerprint so composite provider-owned source state participates in
 	// incremental-sync cutoff checks.

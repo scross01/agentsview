@@ -355,6 +355,11 @@ func parseRooCodeMessages(
 	// most recent execute_command tool call awaiting a result.
 	// -1 means no pending command.
 	pendingCmdMsgIdx := -1
+	// pendingCmdErrored remembers whether any streamed command_output
+	// chunk of the pending command looked like a failure, so the
+	// stream's final status is error-sticky: a normal chunk after an
+	// error must not make the command read as a success.
+	pendingCmdErrored := false
 	pendingMcpMsgIdx := -1
 	// pendingNewTaskMsgIdx tracks the index of the most recent newTask
 	// (delegated child) tool call awaiting a subtask_result. -1 means
@@ -485,16 +490,21 @@ func parseRooCodeMessages(
 			if pendingCmdMsgIdx >= 0 &&
 				pendingCmdMsgIdx < len(parsedMessages) {
 				target := &parsedMessages[pendingCmdMsgIdx]
+				// Streamed chunks are recorded as "running": the
+				// command may still be executing, so no single chunk
+				// can claim the final status. The stream's last chunk
+				// is flipped to an aggregate, error-sticky status by
+				// finalizeRooCommandStream when the stream ends (next
+				// tool call or end of transcript).
+				if rooCommandOutputIsError(output) {
+					pendingCmdErrored = true
+				}
 				for ci := range target.ToolCalls {
 					tc := &target.ToolCalls[ci]
-					status := "completed"
-					if rooCommandOutputIsError(output) {
-						status = "errored"
-					}
 					tc.ResultEvents = append(
 						tc.ResultEvents,
 						ParsedToolResultEvent{
-							Status:    status,
+							Status:    "running",
 							Content:   output,
 							Timestamp: ts,
 						},
@@ -625,7 +635,11 @@ func parseRooCodeMessages(
 			if pendingCmdMsgIdx >= 0 && pendingCmdMsgIdx < len(parsedMessages) {
 				prior := parsedMessages[pendingCmdMsgIdx].ToolCalls
 				if len(prior) > 0 && len(prior[0].ResultEvents) > 0 {
+					finalizeRooCommandStream(
+						parsedMessages, pendingCmdMsgIdx, pendingCmdErrored,
+					)
 					pendingCmdMsgIdx = -1
+					pendingCmdErrored = false
 				}
 			}
 			// Emit assistant message with tool calls.
@@ -646,6 +660,7 @@ func parseRooCodeMessages(
 			switch toolCalls[0].ToolName {
 			case "execute_command":
 				pendingCmdMsgIdx = msgIdx
+				pendingCmdErrored = false
 			case "newTask":
 				// Track delegated child task for pairing with
 				// the subtask_result that reports its completion.
@@ -726,7 +741,47 @@ func parseRooCodeMessages(
 		}
 	}
 
+	// The transcript ended while a command stream was open. Close it
+	// with the aggregate status: a trailing output stream reads as the
+	// command's result (an interrupted-mid-command snapshot is
+	// indistinguishable from a finished one, and leaving it running
+	// would report a false tool_call_pending for every session whose
+	// last activity was a command).
+	finalizeRooCommandStream(parsedMessages, pendingCmdMsgIdx, pendingCmdErrored)
+
 	return parsedMessages, peakCtx, maxTS, nil
+}
+
+// finalizeRooCommandStream closes a streamed command_output sequence by
+// flipping the last chunk's "running" status to the aggregate final
+// status: "errored" when any chunk in the stream looked like a failure
+// (error-sticky — a normal chunk after an error must not read as
+// success), "completed" otherwise. A last event that is not "running"
+// (e.g. an "errored" event appended by error-say pairing) is already
+// final and left untouched.
+func finalizeRooCommandStream(
+	parsedMessages []ParsedMessage, idx int, errored bool,
+) {
+	if idx < 0 || idx >= len(parsedMessages) {
+		return
+	}
+	target := &parsedMessages[idx]
+	for ci := range target.ToolCalls {
+		tc := &target.ToolCalls[ci]
+		n := len(tc.ResultEvents)
+		if n == 0 {
+			continue
+		}
+		last := &tc.ResultEvents[n-1]
+		if last.Status != "running" {
+			continue
+		}
+		if errored {
+			last.Status = "errored"
+		} else {
+			last.Status = "completed"
+		}
+	}
 }
 
 // classifyRooCodeMessage determines the role, tool calls, and tool results

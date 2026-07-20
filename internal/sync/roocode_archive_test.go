@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -103,6 +104,71 @@ func TestSyncRooCodeLateCommandResultUpdatesStoredToolCall(t *testing.T) {
 		"the stored tool call must carry the late result event")
 	assert.Equal(t, "errored", events[0].Status)
 	assert.Contains(t, events[0].Content, "exit code 1")
+}
+
+// SyncAllSince must exclude unchanged RooCode tasks on stat information
+// alone. Routing the cutoff filter through the provider fingerprint
+// would content-hash both session files for every discovered task,
+// scaling quick-sync I/O with the whole archive instead of the changed
+// batch. The unchanged task's files are made unreadable, so any path
+// that reads them fails loudly: pre-fix the fingerprint errors, the
+// task survives the cutoff, and the downstream stat gate counts it as
+// skipped instead of it never being considered at all.
+func TestSyncAllSinceRooCodeCutoffIsStatOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based unreadable files are not enforced on windows")
+	}
+
+	rooDir := t.TempDir()
+	testDB := dbtest.OpenTestDB(t)
+	engine := sync.NewEngine(testDB, sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentRooCode: {rooDir},
+		},
+		Machine: "local",
+	})
+
+	base := time.Date(2026, time.June, 4, 10, 0, 0, 0, time.UTC)
+	historyPath, messagesPath := writeRooCodeSyncFixture(t, rooDir, "task-cutoff",
+		`[{"ts":1688836851000,"type":"say","say":"text","text":"Old task"}]`,
+		base,
+	)
+
+	stats := engine.SyncAll(context.Background(), nil)
+	require.Equal(t, 1, stats.Synced)
+
+	require.NoError(t, os.Chmod(historyPath, 0o000))
+	require.NoError(t, os.Chmod(messagesPath, 0o000))
+	t.Cleanup(func() {
+		_ = os.Chmod(historyPath, 0o644)
+		_ = os.Chmod(messagesPath, 0o644)
+	})
+
+	cutoff := base.Add(time.Hour)
+	stats = engine.SyncAllSince(context.Background(), cutoff, nil)
+	assert.Equal(t, 0, stats.Synced)
+	assert.Equal(t, 0, stats.Failed)
+	assert.Equal(t, 0, stats.Skipped,
+		"an unchanged task must be excluded by the cutoff on stat alone, "+
+			"not carried into the sync pass and skipped there")
+
+	// A sibling-only transcript change past the cutoff must still look
+	// fresh: the composite folds in ui_messages.json's mtime.
+	require.NoError(t, os.Chmod(historyPath, 0o644))
+	require.NoError(t, os.Chmod(messagesPath, 0o644))
+	require.NoError(t, os.WriteFile(messagesPath, []byte(
+		`[{"ts":1688836851000,"type":"say","say":"text","text":"Old task"},`+
+			`{"ts":1688836852000,"type":"say","say":"text","text":"Appended"}]`,
+	), 0o644))
+	appended := cutoff.Add(time.Minute)
+	require.NoError(t, os.Chtimes(messagesPath, appended, appended))
+
+	stats = engine.SyncAllSince(context.Background(), cutoff, nil)
+	assert.Equal(t, 1, stats.Synced,
+		"a transcript append past the cutoff must re-sync the task")
 }
 
 // A vanished ui_messages.json parses as a zero-message session while

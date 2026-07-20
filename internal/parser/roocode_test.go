@@ -2300,7 +2300,8 @@ func TestParseRooCodeSessionMultiPartCommandOutput(t *testing.T) {
 	tc := msgs[1].ToolCalls[0]
 	assert.Equal(t, "execute_command", tc.ToolName)
 	require.Len(t, tc.ResultEvents, 2)
-	assert.Equal(t, "completed", tc.ResultEvents[0].Status)
+	assert.Equal(t, "running", tc.ResultEvents[0].Status,
+		"an intermediate chunk must not resolve the command early")
 	assert.Equal(t, "Running suite A... ok", tc.ResultEvents[0].Content)
 	assert.Equal(t, "errored", tc.ResultEvents[1].Status,
 		"a failing final chunk must mark the command errored")
@@ -2313,6 +2314,77 @@ func TestParseRooCodeSessionMultiPartCommandOutput(t *testing.T) {
 	// The post-stream chunk fell back to a standalone message.
 	assert.Equal(t, "stray late chunk", msgs[3].Content)
 	assert.True(t, msgs[3].IsSystem)
+}
+
+func TestParseRooCodeSessionCommandOutputErrorSticky(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskDir := filepath.Join(tmpDir, "tasks", "test-task-cmdsticky")
+	require.NoError(t, os.MkdirAll(taskDir, 0755))
+
+	historyItem := rooCodeHistoryItem{
+		ID:        "test-task-cmdsticky",
+		Number:    1,
+		Timestamp: 1688836851000,
+		Task:      "Error-sticky command output test",
+		TokensIn:  10,
+		TokensOut: 5,
+		Workspace: "/Users/test/project",
+	}
+	historyJSON, err := json.Marshal(historyItem)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "history_item.json"),
+		historyJSON, 0644,
+	))
+
+	messages := []rooCodeMessage{
+		{
+			Timestamp: 1688836851000,
+			Type:      "say",
+			Say:       "text",
+			Text:      "Run tests",
+		},
+		{
+			Timestamp: 1688836860000,
+			Type:      "ask",
+			Ask:       "command",
+			Text:      "npm test",
+		},
+		// The failure arrives mid-stream; a normal trailing chunk
+		// (cleanup output, summary lines) follows it.
+		{
+			Timestamp: 1688836865000,
+			Type:      "say",
+			Say:       "command_output",
+			Text:      "error: 2 tests failed with exit code 1",
+		},
+		{
+			Timestamp: 1688836870000,
+			Type:      "say",
+			Say:       "command_output",
+			Text:      "Test run finished.",
+		},
+	}
+	messagesJSON, err := json.Marshal(messages)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(taskDir, "ui_messages.json"),
+		messagesJSON, 0644,
+	))
+
+	_, msgs, err := parseRooCodeSession(taskDir, "", "")
+	require.NoError(t, err)
+
+	require.Len(t, msgs, 2)
+	require.Len(t, msgs[1].ToolCalls, 1)
+	tc := msgs[1].ToolCalls[0]
+	require.Len(t, tc.ResultEvents, 2)
+	assert.Equal(t, "running", tc.ResultEvents[0].Status)
+	// Tool health reads the latest event's status, so the final status
+	// must stay errored even though the last chunk looked normal.
+	assert.Equal(t, "errored", tc.ResultEvents[1].Status,
+		"a normal chunk after an error must not mark the command successful")
+	assert.Equal(t, "Test run finished.", tc.ResultEvents[1].Content)
 }
 
 func TestParseRooCodeSessionFileToolResult(t *testing.T) {
