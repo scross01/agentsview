@@ -103,9 +103,10 @@ type kiloLegacyAPIHistoryMessage struct {
 
 // kiloModelRe matches the <model>…</model> child of the
 // "# Current Mode" block in an api_conversation_history environment
-// detail. It is permissive about surrounding whitespace.
+// detail. It requires the "# Current Mode" context to prevent
+// user-provided XML from overriding the active model.
 var kiloModelRe = regexp.MustCompile(
-	`(?is)<model>\s*([^<>\s][^<>]*?)\s*</model>`,
+	`(?is)#\s*Current\s+Mode.*?<model>\s*([^<>\s][^<>]*?)\s*</model>`,
 )
 
 // kiloWorkspaceDirRe matches the absolute workspace path RooCode
@@ -233,19 +234,22 @@ func parseKiloLegacySession(
 	// earliest/latest timestamps are declared at the outer scope
 	// so they survive below the if-block.
 	var (
-		parsedMessages   []ParsedMessage
-		totalOutputTok   int
-		totalInputTok    int
-		peakContextTok   int
-		totalCost        float64
-		hasCost          bool
-		provider         string
-		model            string
-		multiModel       bool
-		workspaceDir     string
-		minTS, maxTS     time.Time
-		totalCacheReads  int
-		totalCacheWrites int
+		parsedMessages      []ParsedMessage
+		totalOutputTok      int
+		totalInputTok       int
+		peakContextTok      int
+		totalCost           float64
+		hasCost             bool
+		requestsWithTokens  int
+		requestsWithCost    int
+		provider            string
+		model               string
+		multiModel          bool
+		multiProvider       bool
+		workspaceDir        string
+		minTS, maxTS        time.Time
+		totalCacheReads     int
+		totalCacheWrites    int
 	)
 	if msgsBytes, readErr := os.ReadFile(messagesPath); readErr == nil {
 		// The absolute workspace directory is the authoritative
@@ -279,7 +283,8 @@ func parseKiloLegacySession(
 		}
 		var parseErr error
 		parsedMessages, totalOutputTok, totalInputTok, peakContextTok,
-			totalCost, hasCost, provider, minTS, maxTS,
+			totalCost, hasCost, requestsWithTokens, requestsWithCost,
+			provider, minTS, maxTS,
 			totalCacheReads, totalCacheWrites, parseErr =
 			parseKiloLegacyMessages(msgsBytes, apiModels)
 		if parseErr != nil {
@@ -287,6 +292,10 @@ func parseKiloLegacySession(
 				"parsing ui_messages.json: %w", parseErr,
 			)
 		}
+		// Track distinct providers to detect mixed-provider sessions.
+		multiProvider = parseKiloLegacyMessagesDistinctProviders(
+			msgsBytes,
+		) > 1
 	}
 
 	// Build session ID: "kilo-legacy:" + basename (task UUID).
@@ -439,7 +448,10 @@ func parseKiloLegacySession(
 		if totalOutputTok > 0 {
 			event.OutputTokens = totalOutputTok
 		}
-		if hasCost {
+		// Only set CostUSD when every request with tokens also reports
+		// cost. A partial sum is not authoritative and prevents catalog
+		// pricing from accounting for remaining requests.
+		if requestsWithTokens > 0 && requestsWithCost == requestsWithTokens {
 			cost := totalCost
 			event.CostUSD = &cost
 		}
@@ -455,7 +467,7 @@ func parseKiloLegacySession(
 		// multiple models were observed to avoid misattribution.
 		if model != "" {
 			event.Model = model
-		} else if !multiModel && provider != "" {
+		} else if !multiModel && !multiProvider && provider != "" {
 			event.Model = provider
 		}
 		sess.UsageEvents = []ParsedUsageEvent{event}
@@ -485,6 +497,8 @@ func parseKiloLegacyMessages(
 	peakContext int,
 	totalCost float64,
 	hasCost bool,
+	requestsWithTokens int,
+	requestsWithCost int,
 	provider string,
 	minTS, maxTS time.Time,
 	totalCacheReads int,
@@ -496,7 +510,7 @@ func parseKiloLegacyMessages(
 		// Tolerate a single-object file (defensive).
 		var single kiloLegacyMessage
 		if singleErr := json.Unmarshal(data, &single); singleErr != nil {
-			return nil, 0, 0, 0, 0, false, "",
+			return nil, 0, 0, 0, 0, false, 0, 0, "",
 				time.Time{}, time.Time{}, 0, 0,
 				fmt.Errorf("parsing ui_messages.json: %w", unmarshalErr)
 		}
@@ -541,6 +555,9 @@ func parseKiloLegacyMessages(
 				if ctx > peakContext {
 					peakContext = ctx
 				}
+				if in > 0 || out > 0 {
+					requestsWithTokens++
+				}
 				if in > 0 {
 					totalInput += in
 				}
@@ -548,7 +565,7 @@ func parseKiloLegacyMessages(
 					totalOutput += out
 				}
 				if costPresent {
-					hasCost = true
+					requestsWithCost++
 					totalCost += cost
 				}
 				if cr > 0 {
@@ -557,9 +574,7 @@ func parseKiloLegacyMessages(
 				if cw > 0 {
 					totalCacheWrites += cw
 				}
-				// Surface the most specific non-empty inference
-				// provider so the usage event carries a model label
-				// even though Kilo records only the provider name.
+				// Track the most recent provider for the usage event.
 				if prov != "" {
 					provider = prov
 				}
@@ -780,6 +795,30 @@ func parseKiloLegacyMessages(
 			continue
 		}
 
+		// Error say / ask events pair with the most recent
+		// unresolved tool call. Handle BEFORE the empty-content
+		// filter so empty error payloads still complete pending calls.
+		errTargets := pendingToolErrorTargets{
+			cmd:     &pendingCmdMsgIdx,
+			mcp:     &pendingMcpMsgIdx,
+			newTask: &pendingNewTaskMsgIdx,
+			general: &pendingToolMsgIdx,
+		}
+		if kiloIsErrorSay(msg.Say) {
+			if pairErrorToPendingTool(
+				messages, errTargets, content, ts,
+			) {
+				continue
+			}
+		}
+		if kiloIsToolErrorEvent(msg.Say, msg.Ask) {
+			if pairErrorToPendingTool(
+				messages, errTargets, content, ts,
+			) {
+				continue
+			}
+		}
+
 		if content == "" && reasoning == "" &&
 			len(toolCalls) == 0 &&
 			len(toolResults) == 0 &&
@@ -887,30 +926,6 @@ func parseKiloLegacyMessages(
 			continue
 		}
 
-		// Error say / ask events pair with the most recent
-		// unresolved tool call. Skip standalone emission when
-		// pairing succeeds.
-		errTargets := pendingToolErrorTargets{
-			cmd:     &pendingCmdMsgIdx,
-			mcp:     &pendingMcpMsgIdx,
-			newTask: &pendingNewTaskMsgIdx,
-			general: &pendingToolMsgIdx,
-		}
-		if kiloIsErrorSay(msg.Say) {
-			if pairErrorToPendingTool(
-				messages, errTargets, content, ts,
-			) {
-				continue
-			}
-		}
-		if kiloIsToolErrorEvent(msg.Say, msg.Ask) {
-			if pairErrorToPendingTool(
-				messages, errTargets, content, ts,
-			) {
-				continue
-			}
-		}
-
 		messages = append(messages, ParsedMessage{
 			Ordinal:       ordinal,
 			Role:          role,
@@ -958,7 +973,8 @@ func parseKiloLegacyMessages(
 	}
 
 	return messages, totalOutput, totalInput, peakContext,
-		totalCost, hasCost, provider, minTS, maxTS,
+		totalCost, hasCost, requestsWithTokens, requestsWithCost,
+		provider, minTS, maxTS,
 		totalCacheReads, totalCacheWrites, nil
 }
 
@@ -1017,6 +1033,35 @@ func distinctModels(s []string) int {
 	for _, m := range s {
 		if m != "" {
 			seen[m] = true
+		}
+	}
+	return len(seen)
+}
+
+// parseKiloLegacyMessagesDistinctProviders counts the number of distinct
+// non-empty inferenceProvider values in ui_messages.json. Used to detect
+// mixed-provider sessions where attributing all usage to one provider
+// would be incorrect.
+func parseKiloLegacyMessagesDistinctProviders(data []byte) int {
+	var rawMessages []json.RawMessage
+	if err := json.Unmarshal(data, &rawMessages); err != nil {
+		return 0
+	}
+	seen := make(map[string]bool)
+	for _, rawMsg := range rawMessages {
+		var msg kiloLegacyMessage
+		if err := json.Unmarshal(rawMsg, &msg); err != nil {
+			continue
+		}
+		if msg.Say != "api_req_started" || msg.Text == "" {
+			continue
+		}
+		var data map[string]any
+		if err := json.Unmarshal([]byte(msg.Text), &data); err != nil {
+			continue
+		}
+		if prov, ok := data["inferenceProvider"].(string); ok && prov != "" {
+			seen[prov] = true
 		}
 	}
 	return len(seen)
