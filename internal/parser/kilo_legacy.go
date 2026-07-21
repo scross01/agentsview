@@ -609,50 +609,10 @@ func parseKiloLegacyMessages(
 			continue
 		}
 
-		if content == "" && reasoning == "" &&
-			len(toolCalls) == 0 &&
-			len(toolResults) == 0 &&
-			len(msg.Images) == 0 {
-			continue
-		}
-
-		// Preserve image-only messages by substituting placeholders.
-		if content == "" && reasoning == "" &&
-			len(toolCalls) == 0 &&
-			len(toolResults) == 0 &&
-			len(msg.Images) > 0 {
-			content = strings.TrimSpace(
-				strings.Repeat("[image] ", len(msg.Images)),
-			)
-		}
-
-		// Unwrap JSON envelopes for followup and completion_result
-		// asks. These carry {"question":"..."} or {"suggest":"..."}
-		// payloads; extract the actual text for display.
-		if msg.Ask == "followup" || msg.Ask == "completion_result" {
-			if unwrapped := kiloUnwrapJSONEnvelope(content); unwrapped != "" {
-				content = unwrapped
-			}
-		}
-
-		if reasoning != "" {
-			messages = append(messages, ParsedMessage{
-				Ordinal:       ordinal,
-				Role:          RoleAssistant,
-				Content:       "[Thinking]\n" + reasoning + "\n[/Thinking]",
-				ThinkingText:  reasoning,
-				HasThinking:   true,
-				Timestamp:     ts,
-				ContentLength: len(reasoning),
-			})
-			ordinal++
-			// If the message had only reasoning and no content,
-			// skip the regular-message emit to avoid an empty row.
-			if content == "" && len(toolCalls) == 0 &&
-				len(toolResults) == 0 {
-				continue
-			}
-		}
+		// Handle deferred-result message types (MCP, codebase-search,
+		// subtask) BEFORE the empty-content filter so empty responses
+		// can still be paired with pending calls, completing them
+		// instead of leaving them falsely pending.
 
 		// Pair command_output → preceding execute_command tool
 		// call. Always emit a result (even on empty output) so
@@ -820,6 +780,51 @@ func parseKiloLegacyMessages(
 			continue
 		}
 
+		if content == "" && reasoning == "" &&
+			len(toolCalls) == 0 &&
+			len(toolResults) == 0 &&
+			len(msg.Images) == 0 {
+			continue
+		}
+
+		// Preserve image-only messages by substituting placeholders.
+		if content == "" && reasoning == "" &&
+			len(toolCalls) == 0 &&
+			len(toolResults) == 0 &&
+			len(msg.Images) > 0 {
+			content = strings.TrimSpace(
+				strings.Repeat("[image] ", len(msg.Images)),
+			)
+		}
+
+		// Unwrap JSON envelopes for followup and completion_result
+		// asks. These carry {"question":"..."} or {"suggest":"..."}
+		// payloads; extract the actual text for display.
+		if msg.Ask == "followup" || msg.Ask == "completion_result" {
+			if unwrapped := kiloUnwrapJSONEnvelope(content); unwrapped != "" {
+				content = unwrapped
+			}
+		}
+
+		if reasoning != "" {
+			messages = append(messages, ParsedMessage{
+				Ordinal:       ordinal,
+				Role:          RoleAssistant,
+				Content:       "[Thinking]\n" + reasoning + "\n[/Thinking]",
+				ThinkingText:  reasoning,
+				HasThinking:   true,
+				Timestamp:     ts,
+				ContentLength: len(reasoning),
+			})
+			ordinal++
+			// If the message had only reasoning and no content,
+			// skip the regular-message emit to avoid an empty row.
+			if content == "" && len(toolCalls) == 0 &&
+				len(toolResults) == 0 {
+				continue
+			}
+		}
+
 		if len(toolCalls) > 0 {
 			// A new tool call conclusively ends a command whose output
 			// stream has begun: later command_output entries belong to
@@ -868,8 +873,16 @@ func parseKiloLegacyMessages(
 			}
 			// Track every emitted tool call so a tool-specific
 			// error (diff_error, rooignore_error) can still find
-			// a target.
-			pendingToolMsgIdx = msgIdx
+			// a target. Tools already completed through embedded
+			// results are not valid error targets — and they end
+			// the previous call's turn, so clear the tracker
+			// instead of letting a stale target absorb a later
+			// unrelated error.
+			if len(toolCalls[0].ResultEvents) == 0 {
+				pendingToolMsgIdx = msgIdx
+			} else {
+				pendingToolMsgIdx = -1
+			}
 			ordinal++
 			continue
 		}
@@ -931,10 +944,15 @@ func parseKiloLegacyMessages(
 		finalizeKiloCommandStream(messages, pendingCmdMsgIdx, pendingCmdErrored)
 	}
 
-	if model := lastNonEmpty(apiModels); model != "" {
-		for i := range messages {
-			if messages[i].Role == RoleAssistant {
-				messages[i].Model = model
+	// Only stamp a session-wide model when exactly one distinct model
+	// exists. Multi-model sessions would corrupt model labels, filters,
+	// and model-scoped analytics if stamped with the final model.
+	if distinctModels(apiModels) <= 1 {
+		if model := lastNonEmpty(apiModels); model != "" {
+			for i := range messages {
+				if messages[i].Role == RoleAssistant {
+					messages[i].Model = model
+				}
 			}
 		}
 	}

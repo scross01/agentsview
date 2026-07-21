@@ -607,12 +607,10 @@ func TestParseKiloLegacySessionModelFromAPIHistory(t *testing.T) {
 			asstModels = append(asstModels, m.Model)
 		}
 	}
-	// Two assistant text turns (the api_req_started messages are
-	// metadata and produce no assistant row).
-	require.Len(t, asstModels, 2)
-	assert.Equal(t, "moonshotai/kimi-k2.5:free", asstModels[0])
-	assert.Equal(t, "moonshotai/kimi-k2.5:free", asstModels[1],
-		"session effective model is applied to all assistant turns")
+	// Multi-model sessions should not stamp any model on assistant
+	// messages to avoid misattribution.
+	require.Len(t, asstModels, 0,
+		"multi-model sessions should not stamp model on assistant messages")
 }
 
 func TestParseKiloLegacyAPIHistoryModelsMissingFile(t *testing.T) {
