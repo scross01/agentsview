@@ -5775,6 +5775,22 @@ func (e *Engine) providerSourceFreshBeforeFingerprint(
 		if e.shouldSkipByPath(path, effectiveInfo) {
 			return mtime, true
 		}
+	case parser.AgentKiloLegacy:
+		// Kilo Legacy's fingerprint is composite (task_metadata.json
+		// plus ui_messages.json and api_conversation_history.json).
+		// The stat-only composite below matches the stored Size/Mtime
+		// the fingerprint stamps, so unchanged tasks skip without
+		// reading transcript bytes, and a sibling-only transcript
+		// append still changes the composite and falls through to the
+		// full fingerprint.
+		size, mtime := kiloLegacyEffectiveStat(path, info)
+		effectiveInfo := fakeSnapshotInfo{
+			fSize:  size,
+			fMtime: mtime,
+		}
+		if e.shouldSkipByPath(path, effectiveInfo) {
+			return mtime, true
+		}
 	}
 	return 0, false
 }
@@ -9473,6 +9489,18 @@ func (e *Engine) SourceMtime(sessionID string) int64 {
 			return 0
 		}
 		_, mtime := roocodeEffectiveStat(path, info)
+		return mtime
+	}
+	if def.Type == parser.AgentKiloLegacy {
+		// Freshness spans task_metadata.json (the stored path) plus
+		// its siblings ui_messages.json and api_conversation_history.json.
+		// The session watcher polls SourceMtime, so this must stay
+		// stat-only — content hashing is reserved for the sync fingerprint.
+		info, err := os.Stat(path)
+		if err != nil {
+			return 0
+		}
+		_, mtime := kiloLegacyEffectiveStat(path, info)
 		return mtime
 	}
 	if def.Type == parser.AgentKiro {

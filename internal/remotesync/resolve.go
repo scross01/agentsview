@@ -455,6 +455,30 @@ func rooCodeSessionFileShape(rel string) bool {
 	return parts[2] == "history_item.json" || parts[2] == "ui_messages.json"
 }
 
+// kiloLegacySessionFileShape reports whether rel — a slash-separated
+// path relative to a Kilo Legacy root — names exactly a session file
+// the provider would discover: tasks/<taskID>/task_metadata.json,
+// tasks/<taskID>/ui_messages.json, or
+// tasks/<taskID>/api_conversation_history.json. Task IDs starting
+// with "_" or "." are rejected, matching discovery's marker-directory
+// skip.
+func kiloLegacySessionFileShape(rel string) bool {
+	parts := strings.Split(rel, "/")
+	if len(parts) != 3 || parts[0] != "tasks" {
+		return false
+	}
+	taskID := parts[1]
+	if taskID == "" || strings.HasPrefix(taskID, "_") ||
+		strings.HasPrefix(taskID, ".") {
+		return false
+	}
+	switch parts[2] {
+	case "task_metadata.json", "ui_messages.json", "api_conversation_history.json":
+		return true
+	}
+	return false
+}
+
 // verbatimSessionFileUnderAllowedRoot authorizes a session-shaped file
 // under a verbatim file-scoped agent's still-allowed root when the
 // file itself is absent from the fresh per-request resolution — the
@@ -482,7 +506,7 @@ func verbatimSessionFileUnderAllowedRoot(
 		if !ok || rel == "" {
 			continue
 		}
-		if !rooCodeSessionFileShape(rel) {
+		if !sessionFileShape(agent, rel) {
 			continue
 		}
 		if symlinkEscapesRoot(dir, file) {
@@ -491,6 +515,17 @@ func verbatimSessionFileUnderAllowedRoot(
 		return true
 	}
 	return false
+}
+
+// sessionFileShape reports whether rel names exactly a session file
+// for the given agent type.
+func sessionFileShape(agent parser.AgentType, rel string) bool {
+	switch agent {
+	case parser.AgentKiloLegacy:
+		return kiloLegacySessionFileShape(rel)
+	default:
+		return rooCodeSessionFileShape(rel)
+	}
 }
 
 func isAiderUnsafeRoot(dir string) bool {

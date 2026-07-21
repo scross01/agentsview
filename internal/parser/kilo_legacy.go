@@ -849,7 +849,10 @@ func parseKiloLegacyMessages(
 			// MCP calls use the mcp__<server>__<tool> name form,
 			// consistent with other agent harnesses, so pair the
 			// following mcp_server_response back to this call.
-			if strings.HasPrefix(toolCalls[0].ToolName, "mcp__") {
+			// Track by category to handle cases where serverName
+			// is missing and the name lacks the mcp__ prefix.
+			if strings.HasPrefix(toolCalls[0].ToolName, "mcp__") ||
+				toolCalls[0].Category == "MCP" {
 				pendingMcpMsgIdx = msgIdx
 			}
 			// Track every emitted tool call so a tool-specific
@@ -1473,13 +1476,29 @@ func parseKiloLegacyToolCall(text string, ordinal int) *ParsedToolCall {
 	}
 	toolName, _ := toolData["tool"].(string)
 	// MCP calls carry the tool name under "toolName" with a
-	// "type":"use_mcp_tool" envelope and no "tool" key.
+	// "type" envelope and no "tool" key. Handle both use_mcp_tool
+	// and access_mcp_resource envelope types.
 	if toolName == "" {
-		if t, _ := toolData["type"].(string); t == "use_mcp_tool" {
-			if mcpName, _ := toolData["toolName"].(string); mcpName != "" {
+		if t, _ := toolData["type"].(string); t != "" {
+			switch t {
+			case "use_mcp_tool":
+				if mcpName, _ := toolData["toolName"].(string); mcpName != "" {
+					serverName, _ := toolData["serverName"].(string)
+					tc := parseKiloLegacyMCPToolCall(
+						mcpName, serverName, toolData, ordinal,
+					)
+					if tc == nil {
+						return nil
+					}
+					tc.ToolUseID = fmt.Sprintf(
+						"kilo-legacy:%s:%d", tc.ToolName, ordinal,
+					)
+					return tc
+				}
+			case "access_mcp_resource":
 				serverName, _ := toolData["serverName"].(string)
 				tc := parseKiloLegacyMCPToolCall(
-					mcpName, serverName, toolData, ordinal,
+					t, serverName, toolData, ordinal,
 				)
 				if tc == nil {
 					return nil
