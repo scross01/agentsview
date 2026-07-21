@@ -233,16 +233,18 @@ func parseKiloLegacySession(
 	// earliest/latest timestamps are declared at the outer scope
 	// so they survive below the if-block.
 	var (
-		parsedMessages []ParsedMessage
-		totalOutputTok int
-		totalInputTok  int
-		peakContextTok int
-		totalCost      float64
-		hasCost        bool
-		provider       string
-		model          string
-		workspaceDir   string
-		minTS, maxTS   time.Time
+		parsedMessages   []ParsedMessage
+		totalOutputTok   int
+		totalInputTok    int
+		peakContextTok   int
+		totalCost        float64
+		hasCost          bool
+		provider         string
+		model            string
+		workspaceDir     string
+		minTS, maxTS     time.Time
+		totalCacheReads  int
+		totalCacheWrites int
 	)
 	if msgsBytes, readErr := os.ReadFile(messagesPath); readErr == nil {
 		// The absolute workspace directory is the authoritative
@@ -270,7 +272,8 @@ func parseKiloLegacySession(
 		model = lastNonEmpty(apiModels)
 		var parseErr error
 		parsedMessages, totalOutputTok, totalInputTok, peakContextTok,
-			totalCost, hasCost, provider, minTS, maxTS, parseErr =
+			totalCost, hasCost, provider, minTS, maxTS,
+			totalCacheReads, totalCacheWrites, parseErr =
 			parseKiloLegacyMessages(msgsBytes, apiModels)
 		if parseErr != nil {
 			return nil, nil, fmt.Errorf(
@@ -384,6 +387,7 @@ func parseKiloLegacySession(
 		SourceSessionID:  taskID,
 		SourceVersion:    "kilo-legacy-task-v1",
 		File:             fileInfo,
+		Cwd:              workspaceDir,
 	}
 
 	// Token / cost accounting. Aggregate per-request
@@ -432,6 +436,12 @@ func parseKiloLegacySession(
 			cost := totalCost
 			event.CostUSD = &cost
 		}
+		if totalCacheReads > 0 {
+			event.CacheReadInputTokens = totalCacheReads
+		}
+		if totalCacheWrites > 0 {
+			event.CacheCreationInputTokens = totalCacheWrites
+		}
 		// Prefer the concrete model ID mined from the API history;
 		// fall back to the coarse inferenceProvider name when the
 		// history carries no model block.
@@ -469,6 +479,8 @@ func parseKiloLegacyMessages(
 	hasCost bool,
 	provider string,
 	minTS, maxTS time.Time,
+	totalCacheReads int,
+	totalCacheWrites int,
 	err error,
 ) {
 	var rawMessages []json.RawMessage
@@ -477,7 +489,7 @@ func parseKiloLegacyMessages(
 		var single kiloLegacyMessage
 		if singleErr := json.Unmarshal(data, &single); singleErr != nil {
 			return nil, 0, 0, 0, 0, false, "",
-				time.Time{}, time.Time{},
+				time.Time{}, time.Time{}, 0, 0,
 				fmt.Errorf("parsing ui_messages.json: %w", unmarshalErr)
 		}
 		rawMessages = []json.RawMessage{data}
@@ -487,6 +499,7 @@ func parseKiloLegacyMessages(
 	ordinal := 0
 	isFirst := true
 	pendingCmdMsgIdx := -1
+	pendingCmdErrored := false
 	pendingMcpMsgIdx := -1
 	pendingCodebaseSearchMsgIdx := -1
 	pendingNewTaskMsgIdx := -1
@@ -515,7 +528,7 @@ func parseKiloLegacyMessages(
 		// accounting for peak context and aggregate totals.
 		if kiloIsMetadataSay(msg.Say) {
 			if msg.Say == "api_req_started" && msg.Text != "" {
-				ctx, in, out, cost, costPresent, prov :=
+				ctx, in, out, cost, costPresent, prov, cr, cw :=
 					kiloExtractAPIRequestStats(msg.Text)
 				if ctx > peakContext {
 					peakContext = ctx
@@ -529,6 +542,12 @@ func parseKiloLegacyMessages(
 				if costPresent {
 					hasCost = true
 					totalCost += cost
+				}
+				if cr > 0 {
+					totalCacheReads += cr
+				}
+				if cw > 0 {
+					totalCacheWrites += cw
 				}
 				// Surface the most specific non-empty inference
 				// provider so the usage event carries a model label
@@ -631,19 +650,19 @@ func parseKiloLegacyMessages(
 		// the call is not left pending.
 		if msg.Say == "command_output" && len(toolResults) > 0 {
 			output := toolResults[0].ContentRaw
+			paired := false
 			if pendingCmdMsgIdx >= 0 &&
 				pendingCmdMsgIdx < len(messages) {
 				target := &messages[pendingCmdMsgIdx]
-				status := "completed"
 				if kiloCommandOutputIsError(output) {
-					status = "errored"
+					pendingCmdErrored = true
 				}
 				for ci := range target.ToolCalls {
 					tc := &target.ToolCalls[ci]
 					tc.ResultEvents = append(
 						tc.ResultEvents,
 						ParsedToolResultEvent{
-							Status:    status,
+							Status:    "running",
 							Content:   output,
 							Timestamp: ts,
 						},
@@ -652,10 +671,15 @@ func parseKiloLegacyMessages(
 				if pendingToolMsgIdx == pendingCmdMsgIdx {
 					pendingToolMsgIdx = -1
 				}
-				pendingCmdMsgIdx = -1
-				continue
+				// Keep the command pending: Kilo Legacy streams
+				// long command output as multiple command_output
+				// entries, and a later chunk can carry the failure
+				// (exit status, error line). Each chunk appends
+				// its own result event; the stream ends when the
+				// next tool call arrives.
+				paired = true
 			}
-			if output != "" {
+			if !paired && output != "" {
 				messages = append(messages, ParsedMessage{
 					Ordinal:       ordinal,
 					Role:          RoleUser,
@@ -666,8 +690,8 @@ func parseKiloLegacyMessages(
 					ToolResults:   toolResults,
 				})
 				ordinal++
-				continue
 			}
+			continue
 		}
 
 		// Pair mcp_server_response → preceding use_mcp_server
@@ -788,6 +812,22 @@ func parseKiloLegacyMessages(
 		}
 
 		if len(toolCalls) > 0 {
+			// A new tool call conclusively ends a command whose output
+			// stream has begun: later command_output entries belong to
+			// whatever runs next (or fall back to standalone), not to
+			// the finished command. A command with no output yet stays
+			// pending — its first output can legitimately trail other
+			// activity when the user proceeds while it runs.
+			if pendingCmdMsgIdx >= 0 && pendingCmdMsgIdx < len(messages) {
+				prior := messages[pendingCmdMsgIdx].ToolCalls
+				if len(prior) > 0 && len(prior[0].ResultEvents) > 0 {
+					finalizeKiloCommandStream(
+						messages, pendingCmdMsgIdx, pendingCmdErrored,
+					)
+					pendingCmdMsgIdx = -1
+					pendingCmdErrored = false
+				}
+			}
 			messages = append(messages, ParsedMessage{
 				Ordinal:       ordinal,
 				Role:          RoleAssistant,
@@ -863,6 +903,13 @@ func parseKiloLegacyMessages(
 	// across the history) for all assistant messages rather than risk
 	// mislabeling individual turns. Provider-only usage events stay
 	// model-less.
+
+	// Finalize any pending command stream: flip the last "running"
+	// event to "completed" or "errored" based on the error-sticky flag.
+	if pendingCmdMsgIdx >= 0 {
+		finalizeKiloCommandStream(messages, pendingCmdMsgIdx, pendingCmdErrored)
+	}
+
 	if model := lastNonEmpty(apiModels); model != "" {
 		for i := range messages {
 			if messages[i].Role == RoleAssistant {
@@ -872,7 +919,40 @@ func parseKiloLegacyMessages(
 	}
 
 	return messages, totalOutput, totalInput, peakContext,
-		totalCost, hasCost, provider, minTS, maxTS, nil
+		totalCost, hasCost, provider, minTS, maxTS,
+		totalCacheReads, totalCacheWrites, nil
+}
+
+// finalizeKiloCommandStream closes a streamed command_output sequence by
+// flipping the last chunk's "running" status to the aggregate final
+// status: "errored" when any chunk in the stream looked like a failure
+// (error-sticky — a normal chunk after an error must not read as
+// success), "completed" otherwise. A last event that is not "running"
+// (e.g. an "errored" event appended by error-say pairing) is already
+// final and left untouched.
+func finalizeKiloCommandStream(
+	messages []ParsedMessage, idx int, errored bool,
+) {
+	if idx < 0 || idx >= len(messages) {
+		return
+	}
+	target := &messages[idx]
+	for ci := range target.ToolCalls {
+		tc := &target.ToolCalls[ci]
+		n := len(tc.ResultEvents)
+		if n == 0 {
+			continue
+		}
+		last := &tc.ResultEvents[n-1]
+		if last.Status != "running" {
+			continue
+		}
+		if errored {
+			last.Status = "errored"
+		} else {
+			last.Status = "completed"
+		}
+	}
 }
 
 // lastNonEmpty returns the last non-empty string in s, or "" when
@@ -1279,15 +1359,17 @@ func kiloExtractAPIRequestStats(text string) (
 	cost float64,
 	costPresent bool,
 	provider string,
+	cacheReads int,
+	cacheWrites int,
 ) {
 	var data map[string]any
 	if err := json.Unmarshal([]byte(text), &data); err != nil {
-		return 0, 0, 0, 0, false, ""
+		return 0, 0, 0, 0, false, "", 0, 0
 	}
 	tokensIn := JSONFloatInt(data["tokensIn"])
 	tokensOut := JSONFloatInt(data["tokensOut"])
-	cacheReads := JSONFloatInt(data["cacheReads"])
-	cacheWrites := JSONFloatInt(data["cacheWrites"])
+	cacheReads = JSONFloatInt(data["cacheReads"])
+	cacheWrites = JSONFloatInt(data["cacheWrites"])
 	contextWindow = tokensIn + cacheReads + cacheWrites
 	inputTokens = tokensIn
 
@@ -1309,7 +1391,7 @@ func kiloExtractAPIRequestStats(text string) (
 	if p, ok := data["inferenceProvider"].(string); ok {
 		provider = p
 	}
-	return contextWindow, inputTokens, tokensOut, cost, costPresent, provider
+	return contextWindow, inputTokens, tokensOut, cost, costPresent, provider, cacheReads, cacheWrites
 }
 
 // JSONFloatInt extracts a JSON-decoded numeric value as an int,

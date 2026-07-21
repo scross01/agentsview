@@ -3259,6 +3259,22 @@ func (e *Engine) discoveredFileEffectiveMtime(
 		_, mtime := roocodeEffectiveStat(file.Path, info)
 		return mtime, nil
 	}
+	// Kilo Legacy is excluded from the provider-Fingerprint path for
+	// cost, not correctness: its Fingerprint content-hashes all three
+	// session files, so consulting it here would read every task's full
+	// transcript on each incremental sync, scaling cutoff filtering with
+	// the archive instead of the changed batch. The stat-only composite
+	// carries the same cutoff signal — the max mtime of all three files —
+	// so a sibling-only transcript append still looks fresh. Sources that
+	// pass the cutoff go on to the full fingerprint as usual.
+	if file.Agent == parser.AgentKiloLegacy {
+		info, err := os.Stat(file.Path)
+		if err != nil {
+			return 0, err
+		}
+		_, mtime := kiloLegacyEffectiveStat(file.Path, info)
+		return mtime, nil
+	}
 	// Provider-authoritative sources resolve freshness through the provider
 	// Fingerprint so composite provider-owned source state participates in
 	// incremental-sync cutoff checks.
@@ -6500,6 +6516,31 @@ func roocodeEffectiveStat(historyPath string, info os.FileInfo) (int64, int64) {
 	return size, mtime
 }
 
+// kiloLegacyEffectiveStat returns the composite size and latest mtime of
+// a Kilo Legacy task's task_metadata.json, ui_messages.json, and
+// api_conversation_history.json using stat calls only. The values mirror
+// what kiloLegacyFingerprintSource stamps on stored sessions (summed
+// size, max mtime), so a stat-only comparison against the stored row is
+// sufficient to detect any change to any of the three files.
+func kiloLegacyEffectiveStat(metadataPath string, info os.FileInfo) (int64, int64) {
+	size := info.Size()
+	mtime := info.ModTime().UnixNano()
+	dir := filepath.Dir(metadataPath)
+	for _, name := range []string{
+		"ui_messages.json",
+		"api_conversation_history.json",
+	} {
+		sibPath := filepath.Join(dir, name)
+		if sibInfo, err := os.Stat(sibPath); err == nil && !sibInfo.IsDir() {
+			size += sibInfo.Size()
+			if ts := sibInfo.ModTime().UnixNano(); ts > mtime {
+				mtime = ts
+			}
+		}
+	}
+	return size, mtime
+}
+
 func copilotEffectiveMtime(eventsPath string, info os.FileInfo) int64 {
 	m := info.ModTime().UnixNano()
 	if filepath.Base(eventsPath) != "events.jsonl" {
@@ -8287,6 +8328,11 @@ func shouldReplaceFullParseMessages(
 		// messages, and strips embedded read results into them. An
 		// append would leave the existing rows' result events stale.
 		pw.sess.Agent == parser.AgentRooCode ||
+		// Kilo Legacy pairs later command_output, MCP response,
+		// and error records back to earlier tool-call messages,
+		// similar to RooCode. An incremental append would leave
+		// the existing rows' result events stale.
+		pw.sess.Agent == parser.AgentKiloLegacy ||
 		pw.sess.Agent == parser.AgentReasonix
 }
 
@@ -8572,7 +8618,7 @@ func (e *Engine) writeSessionFullWithResolver(
 func (e *Engine) shouldPreserveRooCodeArchive(
 	agent parser.AgentType, sessionID string, msgs []db.Message,
 ) bool {
-	if agent != parser.AgentRooCode || len(msgs) > 0 {
+	if (agent != parser.AgentRooCode && agent != parser.AgentKiloLegacy) || len(msgs) > 0 {
 		return false
 	}
 	store := e.archiveStore
@@ -8584,8 +8630,8 @@ func (e *Engine) shouldPreserveRooCodeArchive(
 		return false
 	}
 	log.Printf(
-		"skip roocode session %s: transcript parsed empty but archive has %d messages",
-		sessionID, len(stored),
+		"skip %s session %s: transcript parsed empty but archive has %d messages",
+		agent, sessionID, len(stored),
 	)
 	return true
 }

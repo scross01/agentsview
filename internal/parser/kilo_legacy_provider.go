@@ -209,7 +209,7 @@ func kiloLegacyProviderCapabilities() Capabilities {
 		Content: ContentCapabilities{
 			FirstMessage:         CapabilitySupported,
 			SessionName:          CapabilitySupported,
-			Cwd:                  CapabilityNotApplicable,
+			Cwd:                  CapabilitySupported,
 			Thinking:             CapabilitySupported,
 			Model:                CapabilityNotApplicable,
 			ToolCalls:            CapabilitySupported,

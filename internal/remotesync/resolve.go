@@ -56,6 +56,14 @@ func ResolveTargets(cfg config.Config) TargetSet {
 				}
 				continue
 			}
+			if def.Type == parser.AgentKiloLegacy {
+				root, targetFiles := resolveKiloLegacyTarget(dir)
+				if root != "" && len(targetFiles) > 0 {
+					dirs[def.Type] = append(dirs[def.Type], root)
+					files[def.Type] = append(files[def.Type], targetFiles...)
+				}
+				continue
+			}
 			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 				continue
 			}
@@ -249,6 +257,50 @@ func resolveRooCodeTarget(root string) (string, []string) {
 		msgPath := filepath.Join(filepath.Dir(historyPath), "ui_messages.json")
 		if regularRemoteSyncFile(msgPath) {
 			files = append(files, msgPath)
+		}
+	}
+	if len(files) == 0 {
+		return "", nil
+	}
+	return targetRoot, files
+}
+
+// resolveKiloLegacyTarget resolves a Kilo Legacy globalStorage root to
+// only the per-task session files (task_metadata.json, ui_messages.json,
+// api_conversation_history.json). This avoids recursively transferring
+// the entire globalStorage directory, which can contain MCP settings,
+// API credentials, caches, and other unrelated data.
+func resolveKiloLegacyTarget(root string) (string, []string) {
+	targetRoot := filepath.Clean(root)
+	if info, err := os.Stat(targetRoot); err != nil || !info.IsDir() {
+		return "", nil
+	}
+	provider, ok := parser.NewProvider(parser.AgentKiloLegacy, parser.ProviderConfig{
+		Roots: []string{targetRoot},
+	})
+	if !ok {
+		return "", nil
+	}
+	sources, err := provider.Discover(context.Background())
+	if err != nil {
+		return "", nil
+	}
+	var files []string
+	for _, source := range sources {
+		metadataPath := providerDiscoveredPath(source)
+		if metadataPath == "" || !regularRemoteSyncFile(metadataPath) {
+			continue
+		}
+		files = append(files, metadataPath)
+		taskDir := filepath.Dir(metadataPath)
+		for _, name := range []string{
+			"ui_messages.json",
+			"api_conversation_history.json",
+		} {
+			sibPath := filepath.Join(taskDir, name)
+			if regularRemoteSyncFile(sibPath) {
+				files = append(files, sibPath)
+			}
 		}
 	}
 	if len(files) == 0 {
