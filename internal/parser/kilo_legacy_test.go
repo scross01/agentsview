@@ -332,9 +332,9 @@ func TestParseKiloLegacySessionMCPResponsePairs(t *testing.T) {
 	require.Len(t, parsedMsgs, 2)
 	last := parsedMsgs[1]
 	require.Len(t, last.ToolCalls, 1)
-	// MCP calls classify as "Other" to match the other harness
-	// parsers (Claude/OpenCode/Zencoder), with the mcp__ name form.
-	assert.Equal(t, "Other", last.ToolCalls[0].Category)
+	// MCP calls use Category="MCP" matching RooCode, enabling
+	// correct pending tracking via the mcp__ name form.
+	assert.Equal(t, "MCP", last.ToolCalls[0].Category)
 	assert.Equal(t, "mcp__brave__search", last.ToolCalls[0].ToolName)
 	require.Len(t, last.ToolCalls[0].ResultEvents, 1)
 	assert.Equal(t, "completed",
@@ -372,9 +372,9 @@ func TestParseKiloLegacySessionMCPUseMcpToolShape(t *testing.T) {
 	require.Len(t, last.ToolCalls, 1,
 		"the use_mcp_tool call must not be dropped")
 	tc := last.ToolCalls[0]
-	// Consistent with the other harness parsers: the mcp__ name
-	// classifies as "Other" rather than a dedicated "MCP" category.
-	assert.Equal(t, "Other", tc.Category)
+	// MCP calls use Category="MCP" matching RooCode, enabling
+	// correct pending tracking via the mcp__ name form.
+	assert.Equal(t, "MCP", tc.Category)
 	assert.Equal(t, "mcp__chrome-devtools__take_snapshot", tc.ToolName)
 	// The arguments object is preserved in InputJSON.
 	assert.Contains(t, tc.InputJSON, `"verbose":false`)
@@ -393,7 +393,8 @@ func TestParseKiloLegacyMCPToolCallUnit(t *testing.T) {
 	)
 	require.NotNil(t, tc, "use_mcp_tool call must parse")
 	assert.Equal(t, "mcp__srv__do_thing", tc.ToolName)
-	assert.Equal(t, "Other", tc.Category)
+	assert.Equal(t, "MCP", tc.Category,
+		"MCP tool calls should have Category=MCP matching RooCode")
 	assert.Contains(t, tc.InputJSON, `"a":1`)
 
 	// Without serverName, the name falls back to the raw tool name so
@@ -404,7 +405,8 @@ func TestParseKiloLegacyMCPToolCallUnit(t *testing.T) {
 	)
 	require.NotNil(t, tcNoServer)
 	assert.Equal(t, "bare_tool", tcNoServer.ToolName)
-	assert.Equal(t, "Other", tcNoServer.Category)
+	assert.Equal(t, "MCP", tcNoServer.Category,
+		"MCP calls without serverName should still have Category=MCP")
 
 	// Legacy Cline shape is unaffected.
 	tcLegacy := parseKiloLegacyToolCall(

@@ -1613,7 +1613,7 @@ func parseKiloLegacyMCPToolCall(
 	inputJSON := buildKiloLegacyMCPInputJSON(toolData)
 	tc := &ParsedToolCall{
 		ToolName:  qualified,
-		Category:  NormalizeToolCategory(qualified),
+		Category:  "MCP",
 		InputJSON: inputJSON,
 	}
 	tc.SkillName = inferToolSkillName(qualified, inputJSON)
