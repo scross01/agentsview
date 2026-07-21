@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -234,22 +235,22 @@ func parseKiloLegacySession(
 	// earliest/latest timestamps are declared at the outer scope
 	// so they survive below the if-block.
 	var (
-		parsedMessages      []ParsedMessage
-		totalOutputTok      int
-		totalInputTok       int
-		peakContextTok      int
-		totalCost           float64
-		hasCost             bool
-		requestsWithTokens  int
-		requestsWithCost    int
-		provider            string
-		model               string
-		multiModel          bool
-		multiProvider       bool
-		workspaceDir        string
-		minTS, maxTS        time.Time
-		totalCacheReads     int
-		totalCacheWrites    int
+		parsedMessages     []ParsedMessage
+		totalOutputTok     int
+		totalInputTok      int
+		peakContextTok     int
+		totalCost          float64
+		hasCost            bool
+		requestsWithTokens int
+		requestsWithCost   int
+		provider           string
+		model              string
+		multiModel         bool
+		multiProvider      bool
+		workspaceDir       string
+		minTS, maxTS       time.Time
+		totalCacheReads    int
+		totalCacheWrites   int
 	)
 	if msgsBytes, readErr := os.ReadFile(messagesPath); readErr == nil {
 		// The absolute workspace directory is the authoritative
@@ -1020,9 +1021,9 @@ func lastNonEmpty(s []string) string {
 	if s == nil {
 		return ""
 	}
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] != "" {
-			return s[i]
+	for _, v := range slices.Backward(s) {
+		if v != "" {
+			return v
 		}
 	}
 	return ""
@@ -1191,8 +1192,8 @@ var kiloTerminalTools = map[string]bool{
 func kiloLastAssistantEndsWithTerminalTool(
 	messages []ParsedMessage,
 ) bool {
-	for i := len(messages) - 1; i >= 0; i-- {
-		m := messages[i]
+	for _, v := range slices.Backward(messages) {
+		m := v
 		if m.IsSystem {
 			continue
 		}
@@ -1241,8 +1242,8 @@ func classifyKiloLegacyTermination(
 // no tool calls — a strong signal that the session was
 // interrupted mid-thought.
 func kiloLastMessageIsThinkingOnly(messages []ParsedMessage) bool {
-	for i := len(messages) - 1; i >= 0; i-- {
-		m := messages[i]
+	for _, v := range slices.Backward(messages) {
+		m := v
 		if m.IsSystem {
 			continue
 		}
