@@ -6539,12 +6539,21 @@ func roocodeEffectiveStat(historyPath string, info os.FileInfo) (int64, int64) {
 // size, max mtime), so a stat-only comparison against the stored row is
 // sufficient to detect any change to any of the three files.
 //
-// Missing companion files are simply skipped — the full fingerprint
-// handles deletion detection by comparing against stored state.
+// The task directory mtime is included in the composite to detect
+// companion-file deletions: deleting a file changes the directory's
+// mtime even though surviving files' mtimes are unchanged.
 func kiloLegacyEffectiveStat(metadataPath string, info os.FileInfo) (int64, int64) {
 	size := info.Size()
 	mtime := info.ModTime().UnixNano()
 	dir := filepath.Dir(metadataPath)
+	// Include the task directory mtime to detect companion-file deletions.
+	// Deleting a file changes the directory's mtime even though
+	// surviving files' mtimes are unchanged.
+	if dirInfo, err := os.Stat(dir); err == nil {
+		if ts := dirInfo.ModTime().UnixNano(); ts > mtime {
+			mtime = ts
+		}
+	}
 	for _, name := range []string{
 		"ui_messages.json",
 		"api_conversation_history.json",
