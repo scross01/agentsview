@@ -311,15 +311,30 @@
     }
   }
 
+  // Session route params composed from filters must carry the rolling
+  // intent: a URL with concrete dates but no window_days re-enters
+  // initFromParams as an explicit fixed range, so the rolling
+  // persistence would be lost after one reload.
+  function sessionFilterRouteParams(): Record<string, string> {
+    const params = filtersToParams(sessions.filters);
+    if (sessions.dateFiltersWindowDays !== null) {
+      params[SESSION_ANALYTICS_WINDOW_PARAM] = String(
+        sessions.dateFiltersWindowDays,
+      );
+    }
+    return params;
+  }
+
   function applySessionDateState(
     state: PanelDateState,
     routeParams: Record<string, string>,
   ): Record<string, string> | null {
     const dateParams = panelDateToSessionFilterParams(state);
     if (Object.keys(dateParams).length === 0) return null;
-    sessions.filters.date = dateParams["date"] ?? "";
-    sessions.filters.dateFrom = dateParams["date_from"] ?? "";
-    sessions.filters.dateTo = dateParams["date_to"] ?? "";
+    sessions.applyPanelDateFilters(
+      dateParams,
+      state.mode === "rolling" ? state.windowDays ?? null : null,
+    );
     const params = { ...routeParams };
     for (const key of [
       "date",
@@ -329,7 +344,7 @@
     ]) {
       delete params[key];
     }
-    Object.assign(params, filtersToParams(sessions.filters));
+    Object.assign(params, sessionFilterRouteParams());
     if (
       state.mode === "rolling" &&
       state.windowDays
@@ -444,7 +459,7 @@
   $effect(() => {
     const activeId = sessions.activeSessionId;
     const currentUrlSessionId = router.sessionId;
-    const filterParams = filtersToParams(sessions.filters);
+    const filterParams = sessionFilterRouteParams();
     const filterParamsSignature = JSON.stringify(filterParams);
     untrack(() => {
       if (router.route !== "sessions") {
@@ -503,7 +518,7 @@
   $effect(() => {
     const route = router.route;
     const newParams = sessionRouteParamsForFilters(
-      filtersToParams(sessions.filters),
+      sessionFilterRouteParams(),
       router.params,
     );
     untrack(() => {
