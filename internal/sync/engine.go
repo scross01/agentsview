@@ -6539,11 +6539,8 @@ func roocodeEffectiveStat(historyPath string, info os.FileInfo) (int64, int64) {
 // size, max mtime), so a stat-only comparison against the stored row is
 // sufficient to detect any change to any of the three files.
 //
-// When a companion file is missing (deleted while watcher was offline),
-// the mtime is set to time.Now() to ensure the session passes the
-// cutoff filter and reaches the full fingerprint, which can detect the
-// deletion. This prevents stale transcript or model data from remaining
-// archived after a companion file is removed.
+// Missing companion files are simply skipped — the full fingerprint
+// handles deletion detection by comparing against stored state.
 func kiloLegacyEffectiveStat(metadataPath string, info os.FileInfo) (int64, int64) {
 	size := info.Size()
 	mtime := info.ModTime().UnixNano()
@@ -6555,12 +6552,6 @@ func kiloLegacyEffectiveStat(metadataPath string, info os.FileInfo) (int64, int6
 		sibPath := filepath.Join(dir, name)
 		sibInfo, err := os.Stat(sibPath)
 		if err != nil || sibInfo.IsDir() {
-			// Companion file is missing or is a directory. Set mtime
-			// to now to ensure the session passes cutoff and reaches
-			// the full fingerprint, which can detect the deletion.
-			if now := time.Now().UnixNano(); now > mtime {
-				mtime = now
-			}
 			continue
 		}
 		size += sibInfo.Size()

@@ -555,7 +555,9 @@ func parseKiloLegacyMessages(
 				if ctx > peakContext {
 					peakContext = ctx
 				}
-				if in > 0 || out > 0 {
+				// Track all requests that have any data (tokens or cost)
+				// for consistent coverage calculation.
+				if in > 0 || out > 0 || costPresent || cr > 0 || cw > 0 {
 					requestsWithTokens++
 				}
 				if in > 0 {
@@ -565,6 +567,7 @@ func parseKiloLegacyMessages(
 					totalOutput += out
 				}
 				if costPresent {
+					hasCost = true
 					requestsWithCost++
 					totalCost += cost
 				}
