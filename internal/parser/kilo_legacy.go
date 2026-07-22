@@ -235,22 +235,22 @@ func parseKiloLegacySession(
 	// earliest/latest timestamps are declared at the outer scope
 	// so they survive below the if-block.
 	var (
-		parsedMessages     []ParsedMessage
-		totalOutputTok     int
-		totalInputTok      int
-		peakContextTok     int
-		totalCost          float64
-		hasCost            bool
-		requestsWithTokens int
-		requestsWithCost   int
-		provider           string
-		model              string
-		multiModel         bool
-		multiProvider      bool
-		workspaceDir       string
-		minTS, maxTS       time.Time
-		totalCacheReads    int
-		totalCacheWrites   int
+		parsedMessages   []ParsedMessage
+		totalOutputTok   int
+		totalInputTok    int
+		peakContextTok   int
+		totalCost        float64
+		hasCost          bool
+		totalRequests    int
+		requestsWithCost int
+		provider         string
+		model            string
+		multiModel       bool
+		multiProvider    bool
+		workspaceDir     string
+		minTS, maxTS     time.Time
+		totalCacheReads  int
+		totalCacheWrites int
 	)
 	if msgsBytes, readErr := os.ReadFile(messagesPath); readErr == nil {
 		// The absolute workspace directory is the authoritative
@@ -284,7 +284,7 @@ func parseKiloLegacySession(
 		}
 		var parseErr error
 		parsedMessages, totalOutputTok, totalInputTok, peakContextTok,
-			totalCost, hasCost, requestsWithTokens, requestsWithCost,
+			totalCost, hasCost, totalRequests, requestsWithCost,
 			provider, minTS, maxTS,
 			totalCacheReads, totalCacheWrites, parseErr =
 			parseKiloLegacyMessages(msgsBytes, apiModels)
@@ -449,10 +449,10 @@ func parseKiloLegacySession(
 		if totalOutputTok > 0 {
 			event.OutputTokens = totalOutputTok
 		}
-		// Only set CostUSD when every request with tokens also reports
-		// cost. A partial sum is not authoritative and prevents catalog
-		// pricing from accounting for remaining requests.
-		if requestsWithTokens > 0 && requestsWithCost == requestsWithTokens {
+		// Only set CostUSD when every API request reports cost data.
+		// If any request lacks cost data, the aggregate CostUSD is not
+		// set to prevent partial sums from being treated as authoritative.
+		if totalRequests > 0 && requestsWithCost == totalRequests {
 			cost := totalCost
 			event.CostUSD = &cost
 		}
@@ -498,7 +498,7 @@ func parseKiloLegacyMessages(
 	peakContext int,
 	totalCost float64,
 	hasCost bool,
-	requestsWithTokens int,
+	totalRequests int,
 	requestsWithCost int,
 	provider string,
 	minTS, maxTS time.Time,
@@ -556,10 +556,12 @@ func parseKiloLegacyMessages(
 				if ctx > peakContext {
 					peakContext = ctx
 				}
-				// Track all requests that have any data (tokens or cost)
-				// for consistent coverage calculation.
+				// Count API requests that have any data (tokens, cost,
+				// or cache) for cost coverage calculation. Requests
+				// without any data (e.g., workspace directory messages)
+				// are excluded from the denominator.
 				if in > 0 || out > 0 || costPresent || cr > 0 || cw > 0 {
-					requestsWithTokens++
+					totalRequests++
 				}
 				if in > 0 {
 					totalInput += in
@@ -977,7 +979,7 @@ func parseKiloLegacyMessages(
 	}
 
 	return messages, totalOutput, totalInput, peakContext,
-		totalCost, hasCost, requestsWithTokens, requestsWithCost,
+		totalCost, hasCost, totalRequests, requestsWithCost,
 		provider, minTS, maxTS,
 		totalCacheReads, totalCacheWrites, nil
 }
