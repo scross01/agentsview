@@ -1150,3 +1150,63 @@ func TestParseKiloLegacySessionCompletionResultUnwrapsJSON(t *testing.T) {
 	}
 	assert.True(t, found, "completion_result text should be extracted from JSON envelope")
 }
+
+func TestParseKiloLegacySessionPartialCostExcluded(t *testing.T) {
+	taskDir := writeKiloLegacyFixture(t)
+	msgs := []map[string]any{
+		{"ts": 1700000000000, "type": "say", "say": "text",
+			"text": "first"},
+		// A valid JSON request payload with usageMissing and no
+		// cost field — a real API request that didn't return usage
+		// data. The payload is valid JSON so it counts in the
+		// denominator; costPresent is false so it doesn't count
+		// in requestsWithCost.
+		{"ts": 1700000000500, "type": "say",
+			"say":  "api_req_started",
+			"text": `{"usageMissing":true}`},
+		{"ts": 1700000001000, "type": "say", "say": "text",
+			"text": "second"},
+		{"ts": 1700000001500, "type": "say",
+			"say":  "api_req_started",
+			"text": `{"tokensIn":2500,"tokensOut":120,"cacheReads":400,"cost":0.034,"inferenceProvider":"Z.AI","usageMissing":false}`},
+	}
+	mustWriteJSON(t, filepath.Join(taskDir, "ui_messages.json"), msgs)
+
+	sess, _, err := parseKiloLegacySession(taskDir, "", "h")
+	require.NoError(t, err)
+	require.Len(t, sess.UsageEvents, 1)
+	// The first request is a valid JSON payload (usageMissing) and
+	// counts in the denominator. Since only one of two requests has
+	// cost, CostUSD must not be set.
+	assert.Nil(t, sess.UsageEvents[0].CostUSD,
+		"partial cost must not be treated as authoritative")
+	assert.Equal(t, 120, sess.UsageEvents[0].OutputTokens,
+		"output tokens from the priced request are still counted")
+}
+
+func TestParseKiloLegacySessionWorkspaceDirExcluded(t *testing.T) {
+	taskDir := writeKiloLegacyFixture(t)
+	msgs := []map[string]any{
+		{"ts": 1700000000000, "type": "say", "say": "text",
+			"text": "first"},
+		// Non-JSON workspace metadata — should be excluded from
+		// the cost-coverage denominator entirely.
+		{"ts": 1700000000500, "type": "say",
+			"say":  "api_req_started",
+			"text": `Current Workspace Directory (/a/b/proj) Files`},
+		{"ts": 1700000001000, "type": "say",
+			"say":  "api_req_started",
+			"text": `{"tokensIn":2500,"tokensOut":120,"cacheReads":400,"cost":0.034,"inferenceProvider":"Z.AI","usageMissing":false}`},
+	}
+	mustWriteJSON(t, filepath.Join(taskDir, "ui_messages.json"), msgs)
+
+	sess, _, err := parseKiloLegacySession(taskDir, "", "h")
+	require.NoError(t, err)
+	require.Len(t, sess.UsageEvents, 1)
+	// Workspace metadata is not a valid JSON payload, so it is
+	// excluded from the denominator. The single priced request
+	// is authoritative.
+	require.NotNil(t, sess.UsageEvents[0].CostUSD,
+		"single priced request with workspace metadata excluded should be authoritative")
+	assert.InDelta(t, 0.034, *sess.UsageEvents[0].CostUSD, 0.0001)
+}

@@ -551,16 +551,18 @@ func parseKiloLegacyMessages(
 		// accounting for peak context and aggregate totals.
 		if kiloIsMetadataSay(msg.Say) {
 			if msg.Say == "api_req_started" && msg.Text != "" {
-				ctx, in, out, cost, costPresent, prov, cr, cw :=
+				ctx, in, out, cost, costPresent, prov, cr, cw, valid :=
 					kiloExtractAPIRequestStats(msg.Text)
 				if ctx > peakContext {
 					peakContext = ctx
 				}
-				// Count API requests that have any data (tokens, cost,
-				// or cache) for cost coverage calculation. Requests
-				// without any data (e.g., workspace directory messages)
-				// are excluded from the denominator.
-				if in > 0 || out > 0 || costPresent || cr > 0 || cw > 0 {
+				// Count every valid JSON payload as a request for
+				// the cost-coverage denominator. Non-JSON workspace
+				// metadata is excluded; requests with missing usage
+				// data (usageMissing, no tokens, no cost) are
+				// still counted so that requestsWithCost alone does
+				// not match totalRequests.
+				if valid {
 					totalRequests++
 				}
 				if in > 0 {
@@ -1454,7 +1456,9 @@ func kiloToolResultContent(toolName, text string) (string, bool) {
 // cache reads + cache writes) for that request, the output
 // token count, the summed cost, and whether cost was present.
 // Treats an explicit cost of 0 as present (the provider reported
-// 0; it is authoritative, not absent).
+// 0; it is authoritative, not absent). validPayload reports
+// whether the text was valid JSON (i.e. a real API request
+// payload rather than non-JSON workspace metadata).
 func kiloExtractAPIRequestStats(text string) (
 	contextWindow int,
 	inputTokens int,
@@ -1464,11 +1468,13 @@ func kiloExtractAPIRequestStats(text string) (
 	provider string,
 	cacheReads int,
 	cacheWrites int,
+	validPayload bool,
 ) {
 	var data map[string]any
 	if err := json.Unmarshal([]byte(text), &data); err != nil {
-		return 0, 0, 0, 0, false, "", 0, 0
+		return 0, 0, 0, 0, false, "", 0, 0, false
 	}
+	validPayload = true
 	tokensIn := JSONFloatInt(data["tokensIn"])
 	tokensOut := JSONFloatInt(data["tokensOut"])
 	cacheReads = JSONFloatInt(data["cacheReads"])
@@ -1494,7 +1500,7 @@ func kiloExtractAPIRequestStats(text string) (
 	if p, ok := data["inferenceProvider"].(string); ok {
 		provider = p
 	}
-	return contextWindow, inputTokens, tokensOut, cost, costPresent, provider, cacheReads, cacheWrites
+	return contextWindow, inputTokens, tokensOut, cost, costPresent, provider, cacheReads, cacheWrites, validPayload
 }
 
 // JSONFloatInt extracts a JSON-decoded numeric value as an int,
