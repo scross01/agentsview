@@ -124,6 +124,14 @@ var kiloWorkspaceDirRe = regexp.MustCompile(
 	`Current Workspace Directory \(([^)]+)\)`,
 )
 
+// kiloWorkspaceDirInEnvRe matches the workspace directory only
+// within <environment_details>...</environment_details> blocks,
+// preventing user prompts containing the marker from being
+// selected as the authoritative workspace path.
+var kiloWorkspaceDirInEnvRe = regexp.MustCompile(
+	`(?s)<environment_details>.*?Current Workspace Directory \(([^)]+)\).*?</environment_details>`,
+)
+
 // extractKiloLegacyWorkspaceDir mines the absolute workspace
 // directory from the session transcript so the project can be
 // derived from it. It searches ui_messages.json first (the
@@ -157,6 +165,9 @@ func extractKiloLegacyWorkspaceDir(
 		}
 	}
 	// Fall back to user-role messages in api_conversation_history.json.
+	// Use kiloWorkspaceDirInEnvRe to match only within
+	// <environment_details> blocks, preventing user prompts from
+	// overriding the genuine environment block.
 	apiBytes, err := os.ReadFile(apiHistoryPath)
 	if err != nil {
 		return ""
@@ -168,7 +179,7 @@ func extractKiloLegacyWorkspaceDir(
 				continue
 			}
 			for _, part := range msg.Content {
-				if mm := kiloWorkspaceDirRe.FindStringSubmatch(part.Text); mm != nil {
+				if mm := kiloWorkspaceDirInEnvRe.FindStringSubmatch(part.Text); mm != nil {
 					if dir := strings.TrimSpace(mm[1]); dir != "" {
 						return dir
 					}

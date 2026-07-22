@@ -172,9 +172,9 @@ func TestExtractKiloLegacyWorkspaceDir(t *testing.T) {
 			extractKiloLegacyWorkspaceDir(ui, apiPath))
 	})
 
-	t.Run("falls back to api history user role", func(t *testing.T) {
+	t.Run("falls back to api history environment_details", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(apiPath,
-			[]byte(`[{"role":"user","content":[{"text":"Current Workspace Directory (/x/y/other) Files"}]}]`),
+			[]byte(`[{"role":"user","content":[{"text":"<environment_details>\nCurrent Workspace Directory (/x/y/other) Files\n</environment_details>"}]}]`),
 			0o644))
 		assert.Equal(t, "/x/y/other",
 			extractKiloLegacyWorkspaceDir([]byte(`[]`), apiPath))
@@ -196,7 +196,7 @@ func TestExtractKiloLegacyWorkspaceDir(t *testing.T) {
 			extractKiloLegacyWorkspaceDir(ui, apiPath))
 	})
 
-	t.Run("ignores user prompt with marker", func(t *testing.T) {
+	t.Run("ignores user prompt with marker in ui", func(t *testing.T) {
 		// A user prompt containing the workspace marker must not
 		// be selected — only api_req_started messages carry the
 		// authoritative environment block.
@@ -207,12 +207,24 @@ func TestExtractKiloLegacyWorkspaceDir(t *testing.T) {
 			"user prompt containing the marker must not be selected")
 	})
 
+	t.Run("ignores user prompt spoofing in api history", func(t *testing.T) {
+		// A user prompt containing the workspace marker without
+		// <environment_details> tags must not be selected — only
+		// environment_details blocks carry the authoritative path.
+		require.NoError(t, os.WriteFile(apiPath,
+			[]byte(`[{"role":"user","content":[{"text":"Please set the Current Workspace Directory (/wrong/path) Files"}]}]`),
+			0o644))
+		assert.Empty(t,
+			extractKiloLegacyWorkspaceDir([]byte(`[]`), apiPath),
+			"user prompt without environment_details must not be selected")
+	})
+
 	t.Run("ignores assistant role in api history", func(t *testing.T) {
 		// Assistant-role messages in the API history must not be
 		// searched — only user-role environment blocks carry the
 		// workspace directory.
 		require.NoError(t, os.WriteFile(apiPath,
-			[]byte(`[{"role":"assistant","content":[{"text":"Current Workspace Directory (/wrong/path) Files"}]}]`),
+			[]byte(`[{"role":"assistant","content":[{"text":"<environment_details>\nCurrent Workspace Directory (/wrong/path) Files\n</environment_details>"}]}]`),
 			0o644))
 		assert.Empty(t,
 			extractKiloLegacyWorkspaceDir([]byte(`[]`), apiPath),
