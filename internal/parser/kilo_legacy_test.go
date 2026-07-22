@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -1209,4 +1210,62 @@ func TestParseKiloLegacySessionWorkspaceDirExcluded(t *testing.T) {
 	require.NotNil(t, sess.UsageEvents[0].CostUSD,
 		"single priced request with workspace metadata excluded should be authoritative")
 	assert.InDelta(t, 0.034, *sess.UsageEvents[0].CostUSD, 0.0001)
+}
+
+func TestKiloLegacyDiscoverRejectsSymlinkedTaskDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	root := t.TempDir()
+	tasksDir := filepath.Join(root, "tasks")
+	require.NoError(t, os.MkdirAll(tasksDir, 0o755))
+
+	// Create a real task directory.
+	realTask := filepath.Join(tasksDir, "real-task")
+	require.NoError(t, os.MkdirAll(realTask, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(realTask, "task_metadata.json"),
+		[]byte(`{}`), 0o644,
+	))
+
+	// Create a symlinked task directory pointing outside root.
+	outsideDir := filepath.Join(t.TempDir(), "escaped-task")
+	require.NoError(t, os.MkdirAll(outsideDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(outsideDir, "task_metadata.json"),
+		[]byte(`{}`), 0o644,
+	))
+	symlinkTask := filepath.Join(tasksDir, "symlink-task")
+	require.NoError(t, os.Symlink(outsideDir, symlinkTask))
+
+	matches := kiloLegacyDiscoverFiles(root)
+	require.Len(t, matches, 1,
+		"only the real task should be discovered; symlink should be rejected")
+	assert.Contains(t, matches[0].Path, "real-task",
+		"discovered path should be the real task, not the symlink")
+}
+
+func TestParseKiloLegacySessionMalformedAPIHistoryContinues(t *testing.T) {
+	taskDir := writeKiloLegacyFixture(t)
+	// Malformed api_conversation_history.json — should not abort import.
+	mustWriteRaw(t,
+		filepath.Join(taskDir, "api_conversation_history.json"),
+		`{not valid json`,
+	)
+	msgs := []map[string]any{
+		{"ts": 1700000000000, "type": "say", "say": "text",
+			"text": "hello"},
+		{"ts": 1700000000500, "type": "say",
+			"say":  "api_req_started",
+			"text": `{"tokensIn":500,"tokensOut":10,"cost":0.001,"usageMissing":false}`},
+	}
+	mustWriteJSON(t, filepath.Join(taskDir, "ui_messages.json"), msgs)
+
+	sess, _, err := parseKiloLegacySession(taskDir, "", "h")
+	require.NoError(t, err,
+		"malformed api_conversation_history.json should not abort import")
+	require.NotNil(t, sess)
+	assert.Equal(t, 10, sess.TotalOutputTokens,
+		"transcript should still be parsed from ui_messages.json")
+	require.Len(t, sess.UsageEvents, 1)
 }

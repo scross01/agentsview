@@ -267,11 +267,12 @@ func parseKiloLegacySession(
 		apiModels, apiModelErr := parseKiloLegacyAPIHistoryModels(
 			apiHistoryPath,
 		)
+		// A malformed api_conversation_history.json is not fatal —
+		// the transcript in ui_messages.json is the primary source.
+		// Treat the error as unavailable model metadata and
+		// continue parsing with empty model slices.
 		if apiModelErr != nil {
-			return nil, nil, fmt.Errorf(
-				"parsing api_conversation_history.json: %w",
-				apiModelErr,
-			)
+			apiModels = nil
 		}
 		// The most-recent concrete model in the API history is the
 		// session's effective model for the aggregated usage event.

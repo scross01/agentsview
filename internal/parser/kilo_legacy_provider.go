@@ -66,6 +66,12 @@ func kiloLegacyDiscoverFiles(root string) []singleFileMatch {
 		if !entry.IsDir() {
 			continue
 		}
+		// Reject symlinked task directories. Symlinks can
+		// resolve outside the configured root, so remote sync
+		// must not archive files from an unexpected location.
+		if entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
 		// Skip _index.json and other underscore-prefixed
 		// metadata files. Sessions are timestamped UUIDs.
 		if strings.HasPrefix(entry.Name(), "_") ||

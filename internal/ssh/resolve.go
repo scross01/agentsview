@@ -141,6 +141,7 @@ func buildResolveScript() string {
 			"av_kilo_legacy_root_emitted=0; " +
 			"for av_kl_task in \"$av_kl_tasks\"/*; do " +
 			"[ -d \"$av_kl_task\" ] || continue; " +
+			"[ -L \"$av_kl_task\" ] && continue; " +
 			"case \"${av_kl_task##*/}\" in _*|.*) continue;; esac; " +
 			"av_kl_metadata=\"$av_kl_task/task_metadata.json\"; " +
 			"[ -f \"$av_kl_metadata\" ] || continue; " +
