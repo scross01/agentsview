@@ -112,6 +112,14 @@ Instructions for autonomous coding agents working in this repository.
 - Never overwrite an existing file that is not positively identified as an
   agentsview DuckDB mirror; unrecognized destinations fail closed.
 
+## Provider Format Provenance
+
+When adding a provider, changing its format or usage/cost accounting, or
+investigating a provider release, new artifact generation, parser bug, or usage
+discrepancy, consult `docs/internal/session-format-sources.md` and reverify or
+update its evidence entry in the same change. Grok remains temporarily excluded
+only until its separately owned format-alignment work lands.
+
 ## Localization
 
 - Keep frontend message catalogs synchronized. When adding, removing, or

@@ -51,6 +51,16 @@ type Unit struct {
 // identify the strategy and its knobs; both become part of the extraction
 // configuration's identity. PromptRoles declares which prompt kinds the
 // strategy emits so prompt resolution can be validated up front.
+//
+// Versioning contract: any change that alters the derived units for a
+// transcript whose units could previously commit MUST change Name or
+// Params, so the generation fingerprint changes and the corpus rebuilds
+// under a new identity instead of mixing derivations. A change confined to
+// units that could never commit (for example ranges the evidence window
+// refuses) keeps committed output derivation-identical: the sequential
+// cursor cannot pass an uncommittable unit, so affected sessions hold no
+// entries, and their next visit re-derives a different units digest and
+// rebuilds from scratch.
 type Segmenter interface {
 	Name() string
 	Params() map[string]any
@@ -82,15 +92,60 @@ func (TurnsV1) PromptRoles() []PromptRole {
 }
 
 // Units implements Segmenter.
+// VisibleContents returns the trimmed content of each message that becomes
+// model-visible unit content, in transcript order. The outbound secret scan
+// aggregates exactly these so it sees what the endpoint does — system rows,
+// unsupported roles, and empty rows are dropped from both the units and the
+// scan through the shared visibleContent predicate.
+func VisibleContents(messages []Message) []string {
+	out := make([]string, 0, len(messages))
+	for _, message := range messages {
+		if content, ok := visibleContent(message); ok {
+			out = append(out, content)
+		}
+	}
+	return out
+}
+
+// visibleContent reports whether message contributes model-visible unit
+// content and returns its trimmed text. Units and VisibleContents share it so
+// the segmenter and the outbound scan cannot disagree about what is sent. It
+// does not decide run contiguity: a skipped row still occupies its ordinal,
+// which Units tracks separately.
+func visibleContent(message Message) (string, bool) {
+	if message.IsSystem {
+		return "", false
+	}
+	if message.Role != "user" && message.Role != "assistant" {
+		return "", false
+	}
+	content := strings.TrimSpace(message.Content)
+	if content == "" {
+		return "", false
+	}
+	return content, true
+}
+
 func (s TurnsV1) Units(messages []Message) []Unit {
 	var units []Unit
 	var run []ordinalBlock
+	prevOrdinal := -1
 	for _, message := range messages {
-		if message.IsSystem {
-			continue
+		// Ingest filtering can drop rows after ordinals are assigned, so
+		// the stored transcript may skip ordinals. Evidence provenance
+		// requires gap-free ranges, so no unit may span a missing row:
+		// flush the current run at every discontinuity. Skipped system and
+		// empty rows below still occupy their ordinals, so they keep a run
+		// contiguous. This split stays within the versioning contract
+		// above: it only changes units that spanned a missing ordinal,
+		// which the evidence window always refused to commit.
+		if prevOrdinal >= 0 && message.Ordinal != prevOrdinal+1 {
+			units = packRun(run, s.MaxWindowChars, units)
+			run = nil
 		}
-		content := strings.TrimSpace(message.Content)
-		if content == "" {
+		prevOrdinal = message.Ordinal
+		content, ok := visibleContent(message)
+		if !ok {
 			continue
 		}
 		switch message.Role {

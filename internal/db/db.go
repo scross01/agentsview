@@ -310,7 +310,10 @@ const projectIdentityRemoteScrubCompletedKey = "project_identity_remote_scrub_v1
 // and relationship_type from agyReader.parentCascadeId in trajectory sidecars.)
 // (68: Hermes skill_view metadata. Re-parsing populates tool_calls.skill_name
 // for existing Hermes sessions so historical skill usage appears in analytics.)
-const dataVersion = 68
+// (69: Copilot shutdown events persist the authoritative AI-credit total as
+// reported cost. Re-parsing populates cost_usd and cost_source on existing
+// Copilot rows from session.shutdown totalNanoAiu values.)
+const dataVersion = 69
 
 const tokenCoverageRepairStatsKey = "token_coverage_repair_v1"
 
@@ -1324,6 +1327,8 @@ var readOnlyRequiredTables = []string{
 	"recall_evidence",
 	"recall_query_events",
 	"recall_query_exposures",
+	"recall_extract_generations",
+	"recall_extract_progress",
 }
 
 var (
@@ -1892,6 +1897,10 @@ func schemaColumnMigrations() []schemaColumnMigration {
 			"ALTER TABLE sessions ADD COLUMN secrets_rules_version TEXT NOT NULL DEFAULT ''",
 		},
 		{
+			"recall_extract_progress", "content_stamped_at",
+			"ALTER TABLE recall_extract_progress ADD COLUMN content_stamped_at TEXT NOT NULL DEFAULT ''",
+		},
+		{
 			"insights", "kind",
 			"ALTER TABLE insights ADD COLUMN kind TEXT NOT NULL DEFAULT ''",
 		},
@@ -2114,6 +2123,18 @@ func (db *DB) migrateColumns() error {
 	); err != nil {
 		return fmt.Errorf(
 			"creating idx_sessions_termination_status: %w", err,
+		)
+	}
+	// Lets watermarked extraction scans discover recently written sessions
+	// without walking the whole table. Created here rather than in
+	// schema.sql because local_modified_at is a migrated column that legacy
+	// archives gain just above.
+	if _, err := w.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_sessions_local_modified
+		 ON sessions(local_modified_at)`,
+	); err != nil {
+		return fmt.Errorf(
+			"creating idx_sessions_local_modified: %w", err,
 		)
 	}
 	if _, err := w.Exec(
@@ -2465,6 +2486,13 @@ func (db *DB) createPartialIndexesLocked(w *writerHandle) error {
 		`DROP INDEX IF EXISTS idx_messages_usage_timestamp`,
 	); err != nil {
 		return fmt.Errorf("dropping legacy usage index: %w", err)
+	}
+	// Superseded by idx_recall_extract_progress_retry (schema.sql), whose
+	// trailing updated_at column serves the same prefix.
+	if _, err := w.Exec(
+		`DROP INDEX IF EXISTS idx_recall_extract_progress_state`,
+	); err != nil {
+		return fmt.Errorf("dropping legacy extract progress index: %w", err)
 	}
 	// Rebuild the insight lookup index so it covers date_to (added for
 	// range-aware lookups). DROP/CREATE only touches the index, never the

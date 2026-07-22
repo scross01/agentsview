@@ -16,6 +16,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/sessionwatch"
@@ -365,6 +366,7 @@ type sessionUsageResponse struct {
 	HasTokenData        bool                            `json:"has_token_data"`
 	CostUSD             float64                         `json:"cost_usd"`
 	HasCost             bool                            `json:"has_cost"`
+	CostSource          export.CostSource               `json:"cost_source,omitempty"`
 	AICredits           float64                         `json:"ai_credits,omitempty"`
 	Models              []string                        `json:"models"`
 	UnpricedModels      []string                        `json:"unpriced_models"`
@@ -372,6 +374,7 @@ type sessionUsageResponse struct {
 	Breakdown           []sessionUsageBreakdownResponse `json:"breakdown"`
 	ServerRunning       bool                            `json:"server_running"`
 	RollupCostUSD       *float64                        `json:"rollup_cost_usd,omitempty"`
+	RollupCostSource    export.CostSource               `json:"rollup_cost_source,omitempty"`
 	HasRollupCost       *bool                           `json:"has_rollup_cost,omitempty"`
 	RollupSubagentCount *int                            `json:"rollup_subagent_count,omitempty"`
 }
@@ -446,6 +449,7 @@ func newSessionUsageHumaResponse(usage *db.SessionUsage) sessionUsageResponse {
 		HasTokenData:      usage.HasTokenData,
 		CostUSD:           usage.CostUSD,
 		HasCost:           usage.HasCost,
+		CostSource:        usage.CostSource,
 		AICredits:         usage.AICredits,
 		Models:            usage.Models,
 		UnpricedModels:    unpricedModels,
@@ -473,6 +477,7 @@ func (s *Server) humaSessionUsage(
 		body := newSessionUsageHumaResponse(rollup.Usage)
 		if rollup.HasCost {
 			body.RollupCostUSD = &rollup.CostUSD
+			body.RollupCostSource = rollup.CostSource
 		}
 		body.HasRollupCost = &rollup.HasCost
 		body.RollupSubagentCount = &rollup.SubagentCount
@@ -725,12 +730,21 @@ func (s *Server) humaDeleteSession(
 		}
 		return nil, internalError("soft delete session", err)
 	}
+	s.notifySessionMutation()
 	return &noContentOutput{Status: http.StatusNoContent}, nil
 }
 
 type batchDeleteInput struct {
 	Body struct {
 		SessionIDs []string `json:"session_ids" required:"true" nullable:"false" doc:"Session IDs to soft-delete"`
+	}
+}
+
+// notifySessionMutation reports a completed session-lifecycle change to the
+// registered notifier, if any.
+func (s *Server) notifySessionMutation() {
+	if s.sessionMutationNotify != nil {
+		s.sessionMutationNotify()
 	}
 }
 
@@ -747,6 +761,7 @@ func (s *Server) humaBatchDeleteSessions(
 		}
 		return nil, internalError("batch delete sessions", err)
 	}
+	s.notifySessionMutation()
 	return &noContentOutput{Status: http.StatusNoContent}, nil
 }
 
@@ -764,6 +779,7 @@ func (s *Server) humaRestoreSession(
 	if n == 0 {
 		return nil, apiError(http.StatusNotFound, "session not found or not in trash")
 	}
+	s.notifySessionMutation()
 	return &noContentOutput{Status: http.StatusNoContent}, nil
 }
 
@@ -781,6 +797,7 @@ func (s *Server) humaPermanentDeleteSession(
 	if n == 0 {
 		return nil, apiError(http.StatusConflict, "session not found or not in trash")
 	}
+	s.notifySessionMutation()
 	return &noContentOutput{Status: http.StatusNoContent}, nil
 }
 
@@ -806,6 +823,7 @@ func (s *Server) humaEmptyTrash(
 		}
 		return nil, internalError("empty trash", err)
 	}
+	s.notifySessionMutation()
 	return &jsonOutput[emptyTrashResponse]{Body: emptyTrashResponse{Deleted: count}}, nil
 }
 

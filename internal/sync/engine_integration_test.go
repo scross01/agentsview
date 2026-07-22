@@ -314,6 +314,16 @@ func TestGrokSummaryCountsSurviveSync(t *testing.T) {
 		"numMessages":6,
 		"worktreeLabel":"agentsview"
 	}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(
+		root, "cwd-key", "sess-1", "signals.json",
+	), []byte(`{
+		"tokenUsage": {
+			"peakContextTokens": 4096
+		}
+	}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(
+		root, "cwd-key", "sess-1", "updates.jsonl",
+	), []byte(`{"params":{"update":{"usage":{"inputTokens":131966,"outputTokens":326,"totalTokens":132292,"cachedReadTokens":131456,"reasoningTokens":122,"modelCalls":1,"apiDurationMs":7493,"costUsdTicks":424128000,"modelUsage":{"grok-4.5-build":{"inputTokens":131966,"outputTokens":326,"totalTokens":132292,"cachedReadTokens":131456,"reasoningTokens":122,"modelCalls":1,"apiDurationMs":7493,"costUsdTicks":424128000}},"numTurns":1}}}}`+"\n"), 0o644))
 
 	database := dbtest.OpenTestDB(t)
 	engine := sync.NewEngine(database, sync.EngineConfig{
@@ -331,6 +341,8 @@ func TestGrokSummaryCountsSurviveSync(t *testing.T) {
 	require.NotNil(t, sess)
 	assert.Equal(t, 6, sess.MessageCount)
 	assert.Equal(t, 1, sess.UserMessageCount)
+	assert.True(t, sess.HasPeakContextTokens)
+	assert.Equal(t, 4096, sess.PeakContextTokens)
 
 	promptSearch, err := database.Search(context.Background(), db.SearchFilter{
 		Query: "resume the build",
@@ -347,6 +359,58 @@ func TestGrokSummaryCountsSurviveSync(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, nameSearch.Results, 1)
 	assert.Equal(t, "grok:sess-1", nameSearch.Results[0].SessionID)
+
+	daily, err := database.GetDailyUsage(context.Background(), db.UsageFilter{
+		From: "2026-07-08", To: "2026-07-08", Agent: "grok",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 510, daily.Totals.InputTokens)
+	assert.Equal(t, 131456, daily.Totals.CacheReadTokens)
+	assert.Equal(t, 326, daily.Totals.OutputTokens)
+	assert.InDelta(t, 0.0424128, daily.Totals.TotalCost, 1e-9)
+
+	usage, err := database.GetSessionUsage(
+		context.Background(), "grok:sess-1", true,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	assert.Contains(t, usage.Models, "grok-4.5-build")
+	assert.True(t, usage.HasCost)
+	assert.InDelta(t, 0.0424128, usage.CostUSD, 1e-9)
+	require.Len(t, usage.Breakdown, 1)
+	assert.Equal(t, 510, usage.Breakdown[0].InputTokens)
+	assert.Equal(t, 131456, usage.Breakdown[0].CacheReadInputTokens)
+	assert.Equal(t, 326, usage.Breakdown[0].OutputTokens)
+	assert.True(t, usage.Breakdown[0].HasCost)
+	assert.InDelta(t, 0.0424128, usage.Breakdown[0].CostUSD, 1e-9)
+
+	events, err := database.GetUsageEvents(
+		context.Background(), "grok:sess-1",
+	)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.Equal(t, 122, events[0].ReasoningTokens)
+	require.NotNil(t, events[0].CostUSD)
+	assert.InDelta(t, 0.0424128, *events[0].CostUSD, 1e-9)
+
+	exported, err := database.ExportSessionSummaries(
+		context.Background(),
+		db.SessionExportOptions{
+			Filter: db.SessionFilter{Agent: "grok"},
+			Limit:  10,
+			Format: "json",
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, exported.Rows, 1)
+	require.NotNil(t, exported.Rows[0].ModelUsage)
+	assert.Equal(t, 122, exported.Rows[0].ModelUsage.ReasoningTokens)
+	require.Contains(t,
+		exported.Rows[0].ModelUsage.ByModel, "grok-4.5-build",
+	)
+	assert.Equal(t, 122,
+		exported.Rows[0].ModelUsage.ByModel["grok-4.5-build"].ReasoningTokens,
+	)
 }
 
 type openCodeFamilySQLiteCase struct {

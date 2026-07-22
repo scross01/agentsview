@@ -1,6 +1,7 @@
 <!-- ABOUTME: Session Vital Signs panel — replaces ActivityMinimap on the right column. -->
 <script lang="ts">
   import { onDestroy } from "svelte";
+  import { CopyButton } from "@kenn-io/kit-ui";
   import { sessionTiming } from "../../stores/sessionTiming.svelte.js";
   import { liveTick } from "../../stores/liveTick.svelte.js";
   import { fetchSessionTiming } from "../../api/timing.js";
@@ -22,12 +23,14 @@
   import SubagentCalls from "./SubagentCalls.svelte";
   import { XIcon } from "../../icons.js";
   import { LatestRead } from "../../utils/latest-read.js";
+  import type { Session } from "../../api/types/core.js";
 
   interface Props {
     sessionId: string;
+    session: Session | undefined;
   }
 
-  let { sessionId }: Props = $props();
+  let { sessionId, session }: Props = $props();
 
   $effect(() => {
     void sessionTiming.load(sessionId);
@@ -298,56 +301,104 @@
     </button>
   </header>
 
-  {#if timing}
+  {#if timing || session}
     <section class="v-section">
       <header class="v-h">
         <span>{m.session_vitals_session()}</span>
-        <span class="v-meta" class:live={timing.running}>
-          {#if timing.running}
-            {m.session_vitals_running_duration({ duration: formatDuration(timing.total_duration_ms) })}
-          {:else}
-            {formatDuration(timing.total_duration_ms)}
-          {/if}
-        </span>
+        {#if timing}
+          <span class="v-meta" class:live={timing.running}>
+            {#if timing.running}
+              {m.session_vitals_running_duration({ duration: formatDuration(timing.total_duration_ms) })}
+            {:else}
+              {formatDuration(timing.total_duration_ms)}
+            {/if}
+          </span>
+        {/if}
       </header>
-      <div class="stat-grid">
-        <div>
-          <div class="lbl">{m.session_vitals_tool_calls()}</div>
-          <div class="val">{timing.tool_call_count}</div>
-        </div>
-        <div>
-          <div class="lbl">{m.session_vitals_tool_time()}</div>
-          <div class="val" class:live={timing.running}>
-            {formatDuration(timing.tool_duration_ms)}{timing.running ? "+" : ""}
+      {#if session}
+        <div class="session-context">
+          <div class="context-row">
+            <div class="context-text">
+              <div class="context-label">
+                {m.session_vitals_repository()}
+              </div>
+              <div class="context-value" title={session.project}>
+                {session.project}
+              </div>
+            </div>
+            <CopyButton
+              text={session.project}
+              revealOnHover
+              ariaLabel={m.session_vitals_copy_repository()}
+              copiedAriaLabel={m.session_vitals_repository_copied()}
+              title={m.session_vitals_copy_repository()}
+              copiedTitle={m.session_vitals_repository_copied()}
+            />
+          </div>
+          <div class="context-row">
+            <div class="context-text">
+              <div class="context-label">
+                {m.session_vitals_worktree()}
+              </div>
+              <div class="context-value" title={session.cwd || undefined}>
+                {session.cwd || "—"}
+              </div>
+            </div>
+            {#if session.cwd}
+              <CopyButton
+                text={session.cwd}
+                revealOnHover
+                ariaLabel={m.session_vitals_copy_worktree()}
+                copiedAriaLabel={m.session_vitals_worktree_copied()}
+                title={m.session_vitals_copy_worktree()}
+                copiedTitle={m.session_vitals_worktree_copied()}
+              />
+            {/if}
           </div>
         </div>
-        <div>
-          <div class="lbl">{m.session_vitals_slowest_call()}</div>
-          {#if timing.slowest_call}
-            {@const slowest = timing.slowest_call}
-            <button
-              type="button"
-              class="val slow val-link"
-              title={m.session_vitals_jump_to_call()}
-              onclick={() => scrollToCall(slowest)}
-            >
-              {displayToolName(slowest)} · {formatDuration(slowest.duration_ms ?? 0)}
-            </button>
-          {:else}
-            <div class="val slow">—</div>
-          {/if}
+      {/if}
+      {#if timing}
+        <div class="stat-grid">
+          <div>
+            <div class="lbl">{m.session_vitals_tool_calls()}</div>
+            <div class="val">{timing.tool_call_count}</div>
+          </div>
+          <div>
+            <div class="lbl">{m.session_vitals_tool_time()}</div>
+            <div class="val" class:live={timing.running}>
+              {formatDuration(timing.tool_duration_ms)}{timing.running ? "+" : ""}
+            </div>
+          </div>
+          <div>
+            <div class="lbl">{m.session_vitals_slowest_call()}</div>
+            {#if timing.slowest_call}
+              {@const slowest = timing.slowest_call}
+              <button
+                type="button"
+                class="val slow val-link"
+                title={m.session_vitals_jump_to_call()}
+                onclick={() => scrollToCall(slowest)}
+              >
+                {displayToolName(slowest)} · {formatDuration(slowest.duration_ms ?? 0)}
+              </button>
+            {:else}
+              <div class="val slow">—</div>
+            {/if}
+          </div>
+          <div>
+            <div class="lbl">{m.session_vitals_turns()}</div>
+            <div class="val">{timing.turn_count}</div>
+          </div>
+          <div>
+            <div class="lbl">{m.session_vitals_subagents()}</div>
+            <div class="val">{timing.subagent_count}</div>
+          </div>
         </div>
-        <div>
-          <div class="lbl">{m.session_vitals_turns()}</div>
-          <div class="val">{timing.turn_count}</div>
-        </div>
-        <div>
-          <div class="lbl">{m.session_vitals_subagents()}</div>
-          <div class="val">{timing.subagent_count}</div>
-        </div>
-      </div>
+      {/if}
     </section>
+  {/if}
 
+  {#if timing}
     {#if timing.by_category.length > 0}
       <section class="v-section">
         <header class="v-h">
@@ -658,6 +709,49 @@
   .v-meta.live {
     color: var(--running-fg);
     animation: duration-pulse 1.6s ease-in-out infinite;
+  }
+
+  .session-context {
+    display: grid;
+    gap: var(--space-2);
+    margin-bottom: 12px;
+    padding-bottom: 11px;
+    border-bottom: 1px solid var(--border-muted);
+    font-family: var(--font-mono);
+  }
+
+  .context-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 26px;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .context-text {
+    min-width: 0;
+  }
+
+  .context-row:hover :global(.kit-copy-btn--reveal),
+  .context-row:focus-within :global(.kit-copy-btn--reveal) {
+    opacity: 1;
+  }
+
+  .context-label {
+    color: var(--text-muted);
+    font-size: 9px;
+    margin-bottom: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+
+  .context-value {
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 10px;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* Stat grid */

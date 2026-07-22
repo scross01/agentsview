@@ -359,6 +359,8 @@ CREATE INDEX IF NOT EXISTS idx_recall_entries_source_session
     ON recall_entries(source_session_id);
 CREATE INDEX IF NOT EXISTS idx_recall_entries_source_episode
     ON recall_entries(source_episode_id);
+CREATE INDEX IF NOT EXISTS idx_recall_entries_source_run
+    ON recall_entries(source_run_id, source_session_id, review_state);
 CREATE INDEX IF NOT EXISTS idx_recall_entries_updated
     ON recall_entries(updated_at DESC, id);
 CREATE INDEX IF NOT EXISTS idx_recall_entries_supersession
@@ -451,13 +453,20 @@ CREATE TABLE IF NOT EXISTS recall_extract_progress (
     state          TEXT NOT NULL DEFAULT 'pending'
         CHECK (state IN ('pending', 'partial', 'done', 'failed')),
     content_digest TEXT NOT NULL DEFAULT '',
+    -- pre-read cutoff of the last coverage claim; advances on insert, digest
+    -- reset, and same-digest revisits alike, so it marks the transcript
+    -- snapshot the extraction was last verified against
+    content_stamped_at TEXT NOT NULL DEFAULT '',
     last_error     TEXT NOT NULL DEFAULT '',
     updated_at     TEXT NOT NULL
         DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (session_id, generation_fingerprint)
 );
-CREATE INDEX IF NOT EXISTS idx_recall_extract_progress_state
-    ON recall_extract_progress(generation_fingerprint, state);
+-- The trailing updated_at bounds failed-retry discovery: without it every
+-- failed row of a generation, backoff included, is fetched and filtered on
+-- each scheduler pass.
+CREATE INDEX IF NOT EXISTS idx_recall_extract_progress_retry
+    ON recall_extract_progress(generation_fingerprint, state, updated_at);
 
 -- Pinned messages table
 CREATE TABLE IF NOT EXISTS pinned_messages (

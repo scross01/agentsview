@@ -9,6 +9,7 @@ import {
 } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { cleanup, render } from "@testing-library/svelte";
+import type { Session } from "../../api/types/core.js";
 import type { SessionTiming } from "../../api/types/timing.js";
 
 const mocks = vi.hoisted(() => {
@@ -30,6 +31,23 @@ const mocks = vi.hoisted(() => {
     timing,
   };
 });
+
+const traceSession: Session = {
+  id: "sess-1",
+  project: "agentsview",
+  machine: "local",
+  agent: "codex",
+  first_message: "hello",
+  started_at: "2026-07-14T12:00:00Z",
+  ended_at: "2026-07-14T12:01:00Z",
+  message_count: 2,
+  user_message_count: 1,
+  total_output_tokens: 0,
+  peak_context_tokens: 0,
+  is_automated: false,
+  created_at: "2026-07-14T12:00:00Z",
+  cwd: "/repos/agentsview/.worktrees/trace-context",
+};
 
 vi.mock("../../api/timing.js", () => ({
   fetchSessionTiming: mocks.fetchSessionTiming,
@@ -59,12 +77,13 @@ describe("SessionVitals", () => {
     ui.vitalsOpen = false;
     cleanup();
     document.body.innerHTML = "";
+    vi.unstubAllGlobals();
   });
 
   it("has an obvious close control inside the analysis pane", async () => {
     component = mount(SessionVitals, {
       target: document.body,
-      props: { sessionId: "sess-1" },
+      props: { sessionId: "sess-1", session: undefined },
     });
     await tick();
     await tick();
@@ -82,6 +101,86 @@ describe("SessionVitals", () => {
     expect(ui.vitalsOpen).toBe(false);
   });
 
+  it("shows the repository and worktree recorded by the trace", async () => {
+    component = mount(SessionVitals, {
+      target: document.body,
+      props: { sessionId: traceSession.id, session: traceSession },
+    });
+    await tick();
+    await tick();
+
+    const rows = document.querySelectorAll(".context-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.querySelector(".context-label")?.textContent?.trim()).toBe(
+      m.session_vitals_repository(),
+    );
+    expect(rows[0]?.querySelector(".context-value")?.textContent?.trim()).toBe(
+      traceSession.project,
+    );
+    expect(rows[1]?.querySelector(".context-label")?.textContent?.trim()).toBe(
+      m.session_vitals_worktree(),
+    );
+    expect(rows[1]?.querySelector(".context-value")?.textContent?.trim()).toBe(
+      traceSession.cwd,
+    );
+    expect(
+      document.querySelector('[title="agentsview"]'),
+    ).not.toBeNull();
+    expect(
+      document.querySelector(
+        '[title="/repos/agentsview/.worktrees/trace-context"]',
+      ),
+    ).not.toBeNull();
+  });
+
+  it("keeps trace context visible when timing fails to load", async () => {
+    mocks.fetchSessionTiming.mockRejectedValueOnce(
+      new Error("timing unavailable"),
+    );
+    component = mount(SessionVitals, {
+      target: document.body,
+      props: { sessionId: traceSession.id, session: traceSession },
+    });
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    expect(document.querySelector(".session-context")).not.toBeNull();
+    expect(document.body.textContent).toContain(traceSession.project);
+    expect(document.body.textContent).toContain(traceSession.cwd);
+    expect(document.body.textContent).toContain("timing unavailable");
+  });
+
+  it("copies repository and worktree values from hover controls", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    component = mount(SessionVitals, {
+      target: document.body,
+      props: { sessionId: traceSession.id, session: traceSession },
+    });
+    await tick();
+    await tick();
+
+    const repositoryCopy = document.querySelector<HTMLButtonElement>(
+      `button[aria-label="${m.session_vitals_copy_repository()}"]`,
+    );
+    const worktreeCopy = document.querySelector<HTMLButtonElement>(
+      `button[aria-label="${m.session_vitals_copy_worktree()}"]`,
+    );
+    expect(repositoryCopy).not.toBeNull();
+    expect(worktreeCopy).not.toBeNull();
+    expect(repositoryCopy?.classList).toContain("kit-copy-btn--reveal");
+    expect(worktreeCopy?.classList).toContain("kit-copy-btn--reveal");
+
+    repositoryCopy!.click();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenNthCalledWith(1, traceSession.project);
+
+    worktreeCopy!.click();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenNthCalledWith(2, traceSession.cwd);
+  });
+
   it("aborts a pending sub-agent timing read when collapsed", async () => {
     const signals: AbortSignal[] = [];
     mocks.fetchSessionTiming.mockImplementation(
@@ -93,7 +192,7 @@ describe("SessionVitals", () => {
     );
     component = mount(SessionVitals, {
       target: document.body,
-      props: { sessionId: "sess-1" },
+      props: { sessionId: "sess-1", session: undefined },
     });
     await tick();
     await Promise.resolve();
@@ -126,7 +225,7 @@ describe("SessionVitals", () => {
     );
     component = mount(SessionVitals, {
       target: document.body,
-      props: { sessionId: "sess-1" },
+      props: { sessionId: "sess-1", session: undefined },
     });
     await tick();
     await Promise.resolve();
@@ -159,7 +258,10 @@ describe("SessionVitals", () => {
         return new Promise<SessionTiming>(() => {});
       },
     );
-    const view = render(SessionVitals, { sessionId: "sess-1" });
+    const view = render(SessionVitals, {
+      sessionId: "sess-1",
+      session: undefined,
+    });
     await tick();
     await Promise.resolve();
     await tick();
