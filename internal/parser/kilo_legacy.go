@@ -135,15 +135,20 @@ var kiloWorkspaceDirRe = regexp.MustCompile(
 //
 // The regex is applied to decoded message text fields, not raw
 // JSON bytes, so Windows paths with backslashes are matched
-// correctly and user content that happens to contain the marker
-// is not falsely extracted.
+// correctly. Only api_req_started messages in ui_messages.json
+// and user-role messages in api_conversation_history.json are
+// searched, so user prompts containing the marker are ignored.
 func extractKiloLegacyWorkspaceDir(
 	uiBytes []byte, apiHistoryPath string,
 ) string {
-	// Search ui_messages.json decoded text fields.
+	// Search only api_req_started messages in ui_messages.json —
+	// user prompts containing the marker must not be selected.
 	var uiMsgs []kiloLegacyMessage
 	if json.Unmarshal(uiBytes, &uiMsgs) == nil {
 		for _, msg := range uiMsgs {
+			if msg.Say != "api_req_started" {
+				continue
+			}
 			if mm := kiloWorkspaceDirRe.FindStringSubmatch(msg.Text); mm != nil {
 				if dir := strings.TrimSpace(mm[1]); dir != "" {
 					return dir
@@ -151,7 +156,7 @@ func extractKiloLegacyWorkspaceDir(
 			}
 		}
 	}
-	// Fall back to api_conversation_history.json decoded text fields.
+	// Fall back to user-role messages in api_conversation_history.json.
 	apiBytes, err := os.ReadFile(apiHistoryPath)
 	if err != nil {
 		return ""
@@ -159,6 +164,9 @@ func extractKiloLegacyWorkspaceDir(
 	var apiMsgs []kiloLegacyAPIHistoryMessage
 	if json.Unmarshal(apiBytes, &apiMsgs) == nil {
 		for _, msg := range apiMsgs {
+			if msg.Role != "user" {
+				continue
+			}
 			for _, part := range msg.Content {
 				if mm := kiloWorkspaceDirRe.FindStringSubmatch(part.Text); mm != nil {
 					if dir := strings.TrimSpace(mm[1]); dir != "" {

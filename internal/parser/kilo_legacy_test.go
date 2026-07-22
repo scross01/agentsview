@@ -165,16 +165,16 @@ func TestExtractKiloLegacyWorkspaceDir(t *testing.T) {
 	taskDir := t.TempDir()
 	apiPath := filepath.Join(taskDir, "api_conversation_history.json")
 
-	t.Run("from ui bytes", func(t *testing.T) {
-		ui := []byte(`[{"text":"Current Workspace Directory (/a/b/proj) Files"}]`)
+	t.Run("from api_req_started message", func(t *testing.T) {
+		ui := []byte(`[{"type":"say","say":"api_req_started","text":"Current Workspace Directory (/a/b/proj) Files"}]`)
 		require.NoError(t, os.WriteFile(apiPath, []byte(`[]`), 0o644))
 		assert.Equal(t, "/a/b/proj",
 			extractKiloLegacyWorkspaceDir(ui, apiPath))
 	})
 
-	t.Run("falls back to api history", func(t *testing.T) {
+	t.Run("falls back to api history user role", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(apiPath,
-			[]byte(`[{"content":[{"text":"Current Workspace Directory (/x/y/other) Files"}]}]`),
+			[]byte(`[{"role":"user","content":[{"text":"Current Workspace Directory (/x/y/other) Files"}]}]`),
 			0o644))
 		assert.Equal(t, "/x/y/other",
 			extractKiloLegacyWorkspaceDir([]byte(`[]`), apiPath))
@@ -190,10 +190,33 @@ func TestExtractKiloLegacyWorkspaceDir(t *testing.T) {
 		// contain doubled backslashes, but the decoded text field
 		// has single backslashes. The regex must match the decoded
 		// form, not the raw JSON.
-		ui := []byte(`[{"text":"Current Workspace Directory (C:\\Users\\dev\\code) Files"}]`)
+		ui := []byte(`[{"type":"say","say":"api_req_started","text":"Current Workspace Directory (C:\\Users\\dev\\code) Files"}]`)
 		require.NoError(t, os.WriteFile(apiPath, []byte(`[]`), 0o644))
 		assert.Equal(t, `C:\Users\dev\code`,
 			extractKiloLegacyWorkspaceDir(ui, apiPath))
+	})
+
+	t.Run("ignores user prompt with marker", func(t *testing.T) {
+		// A user prompt containing the workspace marker must not
+		// be selected — only api_req_started messages carry the
+		// authoritative environment block.
+		ui := []byte(`[{"type":"say","say":"text","text":"Please set the Current Workspace Directory (/wrong/path) Files"}]`)
+		require.NoError(t, os.WriteFile(apiPath, []byte(`[]`), 0o644))
+		assert.Empty(t,
+			extractKiloLegacyWorkspaceDir(ui, apiPath),
+			"user prompt containing the marker must not be selected")
+	})
+
+	t.Run("ignores assistant role in api history", func(t *testing.T) {
+		// Assistant-role messages in the API history must not be
+		// searched — only user-role environment blocks carry the
+		// workspace directory.
+		require.NoError(t, os.WriteFile(apiPath,
+			[]byte(`[{"role":"assistant","content":[{"text":"Current Workspace Directory (/wrong/path) Files"}]}]`),
+			0o644))
+		assert.Empty(t,
+			extractKiloLegacyWorkspaceDir([]byte(`[]`), apiPath),
+			"assistant role in api history must not be searched")
 	})
 }
 
