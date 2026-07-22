@@ -184,6 +184,17 @@ func TestExtractKiloLegacyWorkspaceDir(t *testing.T) {
 		require.NoError(t, os.WriteFile(apiPath, []byte(`[]`), 0o644))
 		assert.Empty(t, extractKiloLegacyWorkspaceDir([]byte(`[]`), apiPath))
 	})
+
+	t.Run("windows path in decoded text", func(t *testing.T) {
+		// In JSON, Windows backslashes are escaped. The raw bytes
+		// contain doubled backslashes, but the decoded text field
+		// has single backslashes. The regex must match the decoded
+		// form, not the raw JSON.
+		ui := []byte(`[{"text":"Current Workspace Directory (C:\\Users\\dev\\code) Files"}]`)
+		require.NoError(t, os.WriteFile(apiPath, []byte(`[]`), 0o644))
+		assert.Equal(t, `C:\Users\dev\code`,
+			extractKiloLegacyWorkspaceDir(ui, apiPath))
+	})
 }
 
 func TestParseKiloLegacySessionReadFileExtractsEmbeddedResult(t *testing.T) {

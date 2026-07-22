@@ -132,21 +132,40 @@ var kiloWorkspaceDirRe = regexp.MustCompile(
 // which carry the same line even for short sessions that never
 // emitted an api_req_started event. Returns "" when neither file
 // records the workspace directory.
+//
+// The regex is applied to decoded message text fields, not raw
+// JSON bytes, so Windows paths with backslashes are matched
+// correctly and user content that happens to contain the marker
+// is not falsely extracted.
 func extractKiloLegacyWorkspaceDir(
 	uiBytes []byte, apiHistoryPath string,
 ) string {
-	if mm := kiloWorkspaceDirRe.FindSubmatch(uiBytes); mm != nil {
-		if dir := strings.TrimSpace(string(mm[1])); dir != "" {
-			return dir
+	// Search ui_messages.json decoded text fields.
+	var uiMsgs []kiloLegacyMessage
+	if json.Unmarshal(uiBytes, &uiMsgs) == nil {
+		for _, msg := range uiMsgs {
+			if mm := kiloWorkspaceDirRe.FindStringSubmatch(msg.Text); mm != nil {
+				if dir := strings.TrimSpace(mm[1]); dir != "" {
+					return dir
+				}
+			}
 		}
 	}
+	// Fall back to api_conversation_history.json decoded text fields.
 	apiBytes, err := os.ReadFile(apiHistoryPath)
 	if err != nil {
 		return ""
 	}
-	if mm := kiloWorkspaceDirRe.FindSubmatch(apiBytes); mm != nil {
-		if dir := strings.TrimSpace(string(mm[1])); dir != "" {
-			return dir
+	var apiMsgs []kiloLegacyAPIHistoryMessage
+	if json.Unmarshal(apiBytes, &apiMsgs) == nil {
+		for _, msg := range apiMsgs {
+			for _, part := range msg.Content {
+				if mm := kiloWorkspaceDirRe.FindStringSubmatch(part.Text); mm != nil {
+					if dir := strings.TrimSpace(mm[1]); dir != "" {
+						return dir
+					}
+				}
+			}
 		}
 	}
 	return ""
