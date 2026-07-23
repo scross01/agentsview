@@ -98,6 +98,43 @@ func TestResolveTargetsExcludesTraeProfile(t *testing.T) {
 	assert.Equal(t, []string{claudeRoot}, targets.Dirs[parser.AgentClaude])
 }
 
+// TestResolveTargetsPoolsideNarrowsToTrajectories ensures the HTTP
+// remote-sync resolver narrows Poolside's application-data root to
+// only the trajectories/ subdirectory, preventing unrelated config,
+// caches, or credentials from being archived.
+func TestResolveTargetsPoolsideNarrowsToTrajectories(t *testing.T) {
+	root := t.TempDir()
+	trajectoriesDir := filepath.Join(root, "trajectories")
+	settingsFile := filepath.Join(root, "config.json")
+	require.NoError(t, os.MkdirAll(trajectoriesDir, 0o755))
+	require.NoError(t, os.WriteFile(settingsFile, []byte(`{"api_key":"sk-secret"}`), 0o644))
+
+	targets := remotesync.ResolveTargets(config.Config{AgentDirs: map[parser.AgentType][]string{
+		parser.AgentPoolside: {root},
+	}})
+
+	require.Len(t, targets.Dirs[parser.AgentPoolside], 1,
+		"Poolside must resolve to exactly one directory (trajectories/)")
+	assert.Equal(t, trajectoriesDir, targets.Dirs[parser.AgentPoolside][0],
+		"resolved target must be the trajectories/ subdirectory, not the parent root")
+	assert.NotContains(t, targets.Dirs[parser.AgentPoolside], root,
+		"the application-data root itself must not be an archived target")
+}
+
+// TestResolveTargetsPoolsideSkipsMissingTrajectories ensures the HTTP
+// resolver emits nothing when the trajectories/ subdirectory does not
+// exist.
+func TestResolveTargetsPoolsideSkipsMissingTrajectories(t *testing.T) {
+	root := t.TempDir()
+
+	targets := remotesync.ResolveTargets(config.Config{AgentDirs: map[parser.AgentType][]string{
+		parser.AgentPoolside: {root},
+	}})
+
+	assert.NotContains(t, targets.Dirs, parser.AgentPoolside,
+		"a Poolside root without trajectories/ must not produce a target")
+}
+
 func TestResolveTargetsExpandsHermesProfilesWithDatabaseFiles(t *testing.T) {
 	profilesRoot := filepath.Join(t.TempDir(), ".hermes", "profiles")
 	withSessions := filepath.Join(profilesRoot, "research")

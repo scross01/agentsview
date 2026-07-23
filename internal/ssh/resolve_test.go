@@ -706,3 +706,53 @@ func TestResolveScriptKiloLegacyRejectsSymlinkedTaskDir(t *testing.T) {
 		"tasks/symlink-task/task_metadata.json"),
 		"symlinked task files must be rejected")
 }
+
+// TestResolveScriptPoolsideTargetsOnlyTrajectories ensures the SSH
+// remote-sync resolver narrows Poolside's application-data root to
+// only the trajectories/ subdirectory, mirroring
+// remotesync.resolvePoolsideTarget.
+func TestResolveScriptPoolsideTargetsOnlyTrajectories(t *testing.T) {
+	home := t.TempDir()
+	poolsideRoot := filepath.Join(home, ".local", "share", "poolside")
+	trajectoriesDir := filepath.Join(poolsideRoot, "trajectories")
+	settingsDir := filepath.Join(poolsideRoot, "settings")
+	require.NoError(t, os.MkdirAll(trajectoriesDir, 0o755))
+	require.NoError(t, os.MkdirAll(settingsDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(trajectoriesDir, "trajectory-standalone_test.ndjson"),
+		[]byte(`{"type":"session.start"}`), 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(settingsDir, "config.json"),
+		[]byte(`{"api_key":"sk-secret"}`), 0o644))
+
+	out := runResolveScriptForTest(t, "HOME="+home)
+
+	records := resolveOutputRecords(string(out))
+	trajectoriesSuffix := filepath.ToSlash(filepath.Join(
+		".local", "share", "poolside", "trajectories"))
+	assert.True(t, hasRecordWithPathSuffix(records,
+		string(parser.AgentPoolside), trajectoriesSuffix),
+		"only the trajectories/ subdirectory must be emitted as the target")
+	for _, record := range records {
+		assert.NotContains(t, record, "settings",
+			"unrelated settings directory must not be emitted")
+		assert.NotContains(t, record, "config.json",
+			"unrelated config files must not be emitted")
+	}
+}
+
+// TestResolveScriptPoolsideSkipsRootWithoutTrajectories ensures the
+// SSH resolver emits nothing when the trajectories/ subdirectory does
+// not exist.
+func TestResolveScriptPoolsideSkipsRootWithoutTrajectories(t *testing.T) {
+	home := t.TempDir()
+	poolsideRoot := filepath.Join(home, ".local", "share", "poolside")
+	require.NoError(t, os.MkdirAll(poolsideRoot, 0o755))
+
+	out := runResolveScriptForTest(t, "HOME="+home)
+
+	for _, record := range resolveOutputRecords(string(out)) {
+		assert.NotContains(t, record, "poolside",
+			"a Poolside root without trajectories/ must emit nothing")
+	}
+}
