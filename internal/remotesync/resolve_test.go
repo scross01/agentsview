@@ -135,6 +135,22 @@ func TestResolveTargetsPoolsideSkipsMissingTrajectories(t *testing.T) {
 		"a Poolside root without trajectories/ must not produce a target")
 }
 
+// TestResolveTargetsPoolsideTrajectoriesRoot verifies the HTTP resolver
+// handles a configured root that IS already the trajectories/ directory,
+// using it as-is without producing trajectories/trajectories/.
+func TestResolveTargetsPoolsideTrajectoriesRoot(t *testing.T) {
+	trajectoriesDir := filepath.Join(t.TempDir(), "trajectories")
+	require.NoError(t, os.MkdirAll(trajectoriesDir, 0o755))
+
+	targets := remotesync.ResolveTargets(config.Config{AgentDirs: map[parser.AgentType][]string{
+		parser.AgentPoolside: {trajectoriesDir},
+	}})
+
+	require.Len(t, targets.Dirs[parser.AgentPoolside], 1)
+	assert.Equal(t, trajectoriesDir, targets.Dirs[parser.AgentPoolside][0],
+		"a trajectories/ root must be used as-is, not appended to")
+}
+
 func TestResolveTargetsExpandsHermesProfilesWithDatabaseFiles(t *testing.T) {
 	profilesRoot := filepath.Join(t.TempDir(), ".hermes", "profiles")
 	withSessions := filepath.Join(profilesRoot, "research")

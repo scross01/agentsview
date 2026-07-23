@@ -623,13 +623,22 @@ func sessionStartCwd(start *poolsideSessionStart) string {
 
 // classifyPoolsideTermination maps poolside exit reasons to termination status.
 func classifyPoolsideTermination(reason string, messages []ParsedMessage) TerminationStatus {
-	// Check for orphaned tool calls first.
+	// A trailing exit tool call is Poolside's normal session termination
+	// mechanism — the session ends when exit is invoked, so no result
+	// event follows. Treat exit_tool_called as clean before checking
+	// for orphaned tool calls to avoid misclassifying normal exits.
+	if reason == "exit_tool_called" {
+		return TerminationClean
+	}
+
+	// Check for orphaned tool calls — unresolved tools that are NOT a
+	// trailing exit indicate the session ended mid-execution.
 	if hasOrphanedToolCall(messages) {
 		return TerminationToolCallPending
 	}
 
 	switch reason {
-	case "", "exit_tool_called", "cancelled":
+	case "", "cancelled":
 		return TerminationClean
 	case "memory_compression_error", "session_error":
 		// Memory compression errors and session errors indicate

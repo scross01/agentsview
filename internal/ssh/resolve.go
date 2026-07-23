@@ -162,9 +162,13 @@ func buildResolveScript() string {
 			"av_emit_poolside_target() { " +
 			"target=\"$1\"; " +
 			"case \"$target\" in */) target=\"${target%/}\";; esac; " +
-			"av_poolside_traj=\"$target/trajectories\"; " +
+			"case \"${target##*/}\" in " +
+			"trajectories) [ -d \"$target\" ] && " +
+			"printf '%s\\000' \"" + string(parser.AgentPoolside) + ":$target\";; " +
+			"*) av_poolside_traj=\"$target/trajectories\"; " +
 			"[ -d \"$av_poolside_traj\" ] && " +
-			"printf '%s\\000' \"" + string(parser.AgentPoolside) + ":$av_poolside_traj\"; " +
+			"printf '%s\\000' \"" + string(parser.AgentPoolside) + ":$av_poolside_traj\";; " +
+			"esac; " +
 			"}\n" +
 			"av_emit_target() { " +
 			"agent=\"$1\"; " +

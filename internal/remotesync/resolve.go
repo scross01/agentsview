@@ -320,9 +320,18 @@ func resolveKiloLegacyTarget(root string) (string, []string) {
 // the trajectories/ subdirectory. The configured root is the entire
 // poolside data directory, which may contain config, caches, or
 // credentials alongside trajectories. Only the trajectories/ subdirectory
-// is parsed, so only it must be archived during remote sync.
+// is parsed, so only it must be archived during remote sync. When the
+// root already points to a trajectories/ directory, it is used as-is.
 func resolvePoolsideTarget(root string) string {
-	trajectoriesDir := filepath.Join(filepath.Clean(root), "trajectories")
+	clean := filepath.Clean(root)
+	if filepath.Base(clean) == "trajectories" {
+		info, err := os.Stat(clean)
+		if err != nil || !info.IsDir() {
+			return ""
+		}
+		return clean
+	}
+	trajectoriesDir := filepath.Join(clean, "trajectories")
 	info, err := os.Stat(trajectoriesDir)
 	if err != nil || !info.IsDir() {
 		return ""

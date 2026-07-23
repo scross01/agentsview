@@ -136,6 +136,67 @@ func TestParsePoolsideSessionTermination(t *testing.T) {
 	}
 }
 
+// TestClassifyPoolsideExitToolNotOrphaned verifies that a trailing
+// exit tool call with reason "exit_tool_called" is classified as
+// clean even though the exit tool has no result event (the session
+// terminates when exit is invoked).
+func TestClassifyPoolsideExitToolNotOrphaned(t *testing.T) {
+	messages := []ParsedMessage{
+		{
+			Ordinal: 1,
+			Role:    RoleUser,
+			Content: "help",
+		},
+		{
+			Ordinal:    2,
+			Role:       RoleAssistant,
+			HasToolUse: true,
+			ToolCalls: []ParsedToolCall{
+				{
+					ToolUseID: "poolside:exit:1",
+					ToolName:  "exit",
+					Category:  "Tool",
+				},
+			},
+		},
+	}
+
+	// exit_tool_called must be clean, not tool_call_pending, even
+	// though the exit tool has no result event.
+	termination := classifyPoolsideTermination("exit_tool_called", messages)
+	assert.Equal(t, TerminationClean, termination,
+		"a trailing exit tool must not be classified as orphaned")
+}
+
+// TestClassifyPoolsideNonExitToolOrphaned verifies that a non-exit
+// tool call without a result event is still classified as
+// tool_call_pending.
+func TestClassifyPoolsideNonExitToolOrphaned(t *testing.T) {
+	messages := []ParsedMessage{
+		{
+			Ordinal: 1,
+			Role:    RoleUser,
+			Content: "read file",
+		},
+		{
+			Ordinal:    2,
+			Role:       RoleAssistant,
+			HasToolUse: true,
+			ToolCalls: []ParsedToolCall{
+				{
+					ToolUseID: "poolside:read:1",
+					ToolName:  "read",
+					Category:  "Read",
+				},
+			},
+		},
+	}
+
+	termination := classifyPoolsideTermination("", messages)
+	assert.Equal(t, TerminationToolCallPending, termination,
+		"a non-exit tool without a result must be orphaned")
+}
+
 func TestPoolsideToolCategory(t *testing.T) {
 	tests := []struct {
 		toolName string

@@ -756,3 +756,29 @@ func TestResolveScriptPoolsideSkipsRootWithoutTrajectories(t *testing.T) {
 			"a Poolside root without trajectories/ must emit nothing")
 	}
 }
+
+// TestResolveScriptPoolsideTrajectoriesRoot verifies the SSH resolver
+// handles a configured root that IS already the trajectories/ directory,
+// using it as-is without producing trajectories/trajectories/.
+func TestResolveScriptPoolsideTrajectoriesRoot(t *testing.T) {
+	home := t.TempDir()
+	// Set POOLSIDE_DIR directly to a trajectories/ directory.
+	trajectoriesDir := filepath.Join(home, "poolside", "trajectories")
+	require.NoError(t, os.MkdirAll(trajectoriesDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(trajectoriesDir, "trajectory-standalone_test.ndjson"),
+		[]byte(`{"type":"session.start"}`), 0o644))
+
+	out := runResolveScriptForTest(t, "HOME="+home, "POOLSIDE_DIR="+trajectoriesDir)
+
+	records := resolveOutputRecords(string(out))
+	agentSuffix := filepath.ToSlash(filepath.Join("poolside", "trajectories"))
+	assert.True(t, hasRecordWithPathSuffix(records,
+		string(parser.AgentPoolside), agentSuffix),
+		"a trajectories/ root must be used as-is")
+	// Must NOT produce poolside/poolside/trajectories.
+	for _, record := range records {
+		assert.NotContains(t, record, "poolside/poolside",
+			"must not double-nest trajectories")
+	}
+}
