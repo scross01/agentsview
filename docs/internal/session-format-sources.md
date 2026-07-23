@@ -1080,6 +1080,27 @@ Grok section and remove the explicit registry exception in the coverage test.
   `internal/parser/aider_provider.go`; roles and run boundaries are
   reconstructed from Markdown.
 
+## Poolside Agent CLI (`poolside`)
+
+- **Format:** Single NDJSON trajectory file per session under
+  `<root>/trajectories/trajectory-<type>_<uuid>.ndjson`. Events include
+  `session.start`, `session.input`, `assistant_message.start/end`,
+  `tool_call.parsed`, `tool_call.result`, `thought.start/end`, and
+  `tool_call.inference.start/end`.
+- **Evidence:** `no-public-source`.
+- **Upstream:** No public repository or documentation was found after
+  searching for "poolside agent session format", "poolside trajectory
+  NDJSON", and "poolside persistence". Format was characterized from real
+  trajectory files. Vendor was checked 2026-07-23.
+- **Usage and cost:** Per-inference token counts (`input_tokens`,
+  `output_tokens`, `cache_read_input_tokens`, `cache_write_input_tokens`)
+  are persisted in `tool_call.inference.end` events. The model is recorded
+  in `tool_call.inference.start` and paired by `step_id`. No authoritative
+  USD cost is persisted; Agentsview computes cost from its pricing catalog.
+- **Agentsview:** `internal/parser/poolside.go` and
+  `internal/parser/poolside_provider.go`; single-file provider with
+  NDJSON line-by-line parsing.
+
 ## Reasonix (`reasonix`)
 
 - **Format:** Session JSONL plus `.jsonl.meta` sidecars across live, archive,
