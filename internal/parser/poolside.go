@@ -254,13 +254,11 @@ func parsePoolsideSession(
 			currentModel = ""
 
 		case "assistant_message.end":
-			// Update the last assistant message with content if present.
-			if event.AssistantMessageEnd != nil &&
-				event.AssistantMessageEnd.AssistantMessage != "" &&
-				len(messages) > 0 {
+			if event.AssistantMessageEnd != nil && len(messages) > 0 {
 				lastMsg := &messages[len(messages)-1]
 				if lastMsg.Role == RoleAssistant {
-					if lastMsg.Content == "" {
+					// Update content if present and not yet set.
+					if event.AssistantMessageEnd.AssistantMessage != "" && lastMsg.Content == "" {
 						lastMsg.Content = event.AssistantMessageEnd.AssistantMessage
 						lastMsg.ContentLength = len(event.AssistantMessageEnd.AssistantMessage)
 					}

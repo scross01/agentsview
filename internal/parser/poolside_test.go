@@ -434,6 +434,55 @@ func TestParsePoolsideSessionModelSwitch(t *testing.T) {
 		"second assistant message tags the switched model")
 }
 
+// TestParsePoolsideSessionToolOnlyModelAttribution verifies that
+// tool-only assistant turns (no text content) still get their model
+// attributed from the pendingInferences step_id lookup.
+func TestParsePoolsideSessionToolOnlyModelAttribution(t *testing.T) {
+	tmpDir := t.TempDir()
+	trajectoryPath := filepath.Join(tmpDir, "trajectory-standalone_toolonly.ndjson")
+
+	// Assistant turn has no text in assistant_message.end (empty
+	// assistant_message), only tool calls. Model must still be stamped.
+	content := `{"id":"event-1","timestamp":"2026-07-08T07:20:51.000000-04:00","type":"session.start","session_start":{"workspace":"","working_directories":["/test"],"prompt":""}}
+{"id":"event-2","timestamp":"2026-07-08T07:20:51.100000-04:00","type":"session.input","session_input":{"id":"","prompt":"read file","mode":"build"}}
+{"id":"inf-start","step_id":"step-to1","timestamp":"2026-07-08T07:20:52.000000-04:00","type":"tool_call.inference.start","tool_call_inference_start":{"chat_completion_request":{"model":"poolside/laguna-m.1"}}}
+{"id":"asst-start","step_id":"step-to1","timestamp":"2026-07-08T07:20:52.500000-04:00","type":"assistant_message.start","assistant_message_start":{}}
+{"id":"parsed-1","step_id":"step-to1","timestamp":"2026-07-08T07:20:53.000000-04:00","type":"tool_call.parsed","tool_call_parsed":{"id":"call-1","name":"read","args":{"path":"/test/file.txt"}}}
+{"id":"asst-end","step_id":"step-to1","timestamp":"2026-07-08T07:20:54.000000-04:00","type":"assistant_message.end","assistant_message_end":{"assistant_message":""}}
+{"id":"inf-end","step_id":"step-to1","timestamp":"2026-07-08T07:20:55.000000-04:00","type":"tool_call.inference.end","tool_call_inference_end":{"input_tokens":500,"output_tokens":30,"cache_read_input_tokens":0,"cache_write_input_tokens":0}}
+`
+	require.NoError(t, os.WriteFile(trajectoryPath, []byte(content), 0644))
+
+	sess, msgs, usageEvents, err := parsePoolsideSession(trajectoryPath, "", "")
+	require.NoError(t, err)
+
+	require.Len(t, msgs, 2, "user + assistant")
+	assert.Equal(t, RoleUser, msgs[0].Role)
+	assert.Equal(t, RoleAssistant, msgs[1].Role)
+
+	// Tool-only turn: no text content.
+	assert.Empty(t, msgs[1].Content, "tool-only turn must have no content")
+	assert.True(t, msgs[1].HasToolUse)
+	require.Len(t, msgs[1].ToolCalls, 1)
+	assert.Equal(t, "read", msgs[1].ToolCalls[0].ToolName)
+
+	// Model must still be attributed despite empty content.
+	assert.Equal(t, "poolside/laguna-m.1", msgs[1].Model,
+		"tool-only assistant turn must still receive model attribution")
+
+	// Usage event emitted.
+	require.Len(t, usageEvents, 1)
+	assert.Equal(t, "poolside/laguna-m.1", usageEvents[0].Model)
+	assert.Equal(t, 500, usageEvents[0].InputTokens)
+	assert.Equal(t, 30, usageEvents[0].OutputTokens)
+
+	// Session aggregates.
+	assert.True(t, sess.HasTotalOutputTokens)
+	assert.Equal(t, 30, sess.TotalOutputTokens)
+	assert.True(t, sess.HasPeakContextTokens)
+	assert.Equal(t, 500, sess.PeakContextTokens)
+}
+
 // TestParsePoolsideSessionPeakContextIsMax ensures peak context is
 // measured as the largest single inference input, not a cumulative sum
 // across rapid back-to-back inferences.
