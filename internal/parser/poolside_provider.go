@@ -4,6 +4,7 @@
 package parser
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ func newPoolsideProviderFactory(def AgentDef) ProviderFactory {
 			return NewSingleFileSourceSet(
 				def.Type,
 				cfg.Roots,
-				WithFileDiscovery(poolsideDiscoverFiles),
+				WithStreamingFileDiscovery(poolsideDiscoverEach),
 				WithFileWatchRoots(poolsideWatchRoots),
 				WithFileChangedPathClassifier(
 					func(root, path string, allowMissing bool) (singleFileMatch, bool) {
@@ -42,31 +43,24 @@ func newPoolsideProviderFactory(def AgentDef) ProviderFactory {
 	)
 }
 
-// poolsideDiscoverFiles finds all trajectory NDJSON files under a root.
-// root is the poolside data directory; trajectories live under
-// <root>/trajectories/.
-func poolsideDiscoverFiles(root string) []singleFileMatch {
+// poolsideDiscoverEach finds all trajectory NDJSON files under a root
+// using streaming discovery. root is the poolside data directory;
+// trajectories live under <root>/trajectories/.
+func poolsideDiscoverEach(
+	ctx context.Context, root string, yield func(singleFileMatch) error,
+) error {
 	trajectoriesDir := filepath.Join(root, "trajectories")
-	entries, err := os.ReadDir(trajectoriesDir)
-	if err != nil {
-		return nil
-	}
-
-	var matches []singleFileMatch
-	for _, entry := range entries {
+	return streamDirectoryEntries(ctx, trajectoriesDir, func(entry os.DirEntry) error {
 		if entry.IsDir() {
-			continue
+			return nil
 		}
 		name := entry.Name()
 		if !strings.HasPrefix(name, "trajectory-") || !strings.HasSuffix(name, ".ndjson") {
-			continue
+			return nil
 		}
 		path := filepath.Join(trajectoriesDir, name)
-		matches = append(matches, singleFileMatch{
-			Path: path,
-		})
-	}
-	return matches
+		return yield(singleFileMatch{Path: path})
+	})
 }
 
 // poolsideWatchRoots creates watch plans for each root.

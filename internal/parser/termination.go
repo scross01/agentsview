@@ -146,10 +146,6 @@ func hasOrphanedToolCall(messages []ParsedMessage) bool {
 
 	for _, tc := range last.ToolCalls {
 		if tc.ToolUseID != "" && !resolved[tc.ToolUseID] {
-			// Tool calls with embedded ResultEvents are considered resolved.
-			if len(tc.ResultEvents) > 0 {
-				continue
-			}
 			return true
 		}
 	}

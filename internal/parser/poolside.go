@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,7 +136,7 @@ func parsePoolsideSession(
 
 	var sessionStart *poolsideSessionStart
 	var exitReason string
-	var firstInferenceTime time.Time
+	var firstEventTime time.Time
 	var lastEventTime time.Time
 
 	// Track tool calls for result pairing by step_id.
@@ -192,7 +193,7 @@ func parsePoolsideSession(
 	sessionID = strings.TrimSuffix(sessionID, ".ndjson")
 
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // up to 10MB per line
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -207,6 +208,9 @@ func parsePoolsideSession(
 
 		ts := parsePoolsideTimestamp(event.Timestamp)
 		if !ts.IsZero() {
+			if firstEventTime.IsZero() {
+				firstEventTime = ts
+			}
 			lastEventTime = ts
 		}
 
@@ -447,9 +451,6 @@ func parsePoolsideSession(
 					peakInputTokens = inf.InputTokens
 				}
 				inferenceCount++
-				if firstInferenceTime.IsZero() && !ts.IsZero() {
-					firstInferenceTime = ts
-				}
 
 				// Resolve the model for this inference. Prefer
 				// the start event's model (paired by step_id);
@@ -502,12 +503,7 @@ func parsePoolsideSession(
 	// loop so per-inference usage events could carry it inline.
 
 	// Parse startedAt from first event timestamp.
-	var startedAt time.Time
-	if !firstInferenceTime.IsZero() {
-		startedAt = firstInferenceTime
-	} else if !lastEventTime.IsZero() {
-		startedAt = lastEventTime
-	}
+	startedAt := firstEventTime
 
 	// Determine endedAt from last event time.
 	endedAt := lastEventTime
@@ -656,13 +652,7 @@ func hashPoolsideSourceFile(path string) (string, int64, int64, error) {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	for scanner.Scan() {
-		h.Write(scanner.Bytes())
-		h.Write([]byte("\n"))
-	}
-	if err := scanner.Err(); err != nil {
+	if _, err := io.Copy(h, f); err != nil {
 		return "", 0, 0, err
 	}
 
