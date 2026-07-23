@@ -75,6 +75,44 @@ func TestParsePoolsideSessionWithToolCalls(t *testing.T) {
 	assert.Contains(t, msgs[1].ToolCalls[0].ToolUseID, "poolside:read:")
 }
 
+// TestParsePoolsideMultipleCallsSameStep verifies that multiple
+// tool_call.parsed events sharing the same step_id each get their
+// own result paired correctly, not overwritten by a later call.
+func TestParsePoolsideMultipleCallsSameStep(t *testing.T) {
+	tmpDir := t.TempDir()
+	trajectoryPath := filepath.Join(tmpDir, "trajectory-standalone_multicall.ndjson")
+
+	// Two tool calls in the same step, each with a unique payload ID
+	// and its own result. The old step_id-keyed map would overwrite
+	// the first parsed call, losing its result.
+	content := `{"id":"event-1","timestamp":"2026-07-08T07:20:51.000000-04:00","type":"session.start","session_start":{"workspace":"","working_directories":["/test"],"prompt":""}}
+{"id":"event-2","timestamp":"2026-07-08T07:20:51.100000-04:00","type":"session.input","session_input":{"id":"","prompt":"read two files","mode":"build"}}
+{"id":"event-3","timestamp":"2026-07-08T07:20:52.000000-04:00","type":"assistant_message.start","assistant_message_start":{}}
+{"id":"parsed-1","step_id":"step-multi","timestamp":"2026-07-08T07:20:53.000000-04:00","type":"tool_call.parsed","tool_call_parsed":{"id":"call-a","name":"read","args":{"path":"/test/a.txt"}}}
+{"id":"parsed-2","step_id":"step-multi","timestamp":"2026-07-08T07:20:53.100000-04:00","type":"tool_call.parsed","tool_call_parsed":{"id":"call-b","name":"read","args":{"path":"/test/b.txt"}}}
+{"id":"result-1","step_id":"step-multi","timestamp":"2026-07-08T07:20:54.000000-04:00","type":"tool_call.result","tool_call_result":{"id":"call-a","tool_name":"read","observation":"contents of A"}}
+{"id":"result-2","step_id":"step-multi","timestamp":"2026-07-08T07:20:54.100000-04:00","type":"tool_call.result","tool_call_result":{"id":"call-b","tool_name":"read","observation":"contents of B"}}
+{"id":"event-6","timestamp":"2026-07-08T07:21:00.000000-04:00","type":"assistant_message.end","assistant_message_end":{"assistant_message":"Here are both files."}}
+`
+	require.NoError(t, os.WriteFile(trajectoryPath, []byte(content), 0644))
+
+	_, msgs, _, err := parsePoolsideSession(trajectoryPath, "", "")
+	require.NoError(t, err)
+
+	require.Len(t, msgs, 2)
+	assistant := msgs[1]
+	assert.True(t, assistant.HasToolUse)
+	require.Len(t, assistant.ToolCalls, 2, "both tool calls must be present")
+
+	// Each call must have its own result paired correctly.
+	require.Len(t, assistant.ToolCalls[0].ResultEvents, 1)
+	assert.Equal(t, "contents of A", assistant.ToolCalls[0].ResultEvents[0].Content,
+		"first call must get its own result")
+	require.Len(t, assistant.ToolCalls[1].ResultEvents, 1)
+	assert.Equal(t, "contents of B", assistant.ToolCalls[1].ResultEvents[0].Content,
+		"second call must get its own result, not overwrite the first")
+}
+
 func TestParsePoolsideSessionWithThinking(t *testing.T) {
 	tmpDir := t.TempDir()
 	trajectoryPath := filepath.Join(tmpDir, "trajectory-standalone_thinking.ndjson")

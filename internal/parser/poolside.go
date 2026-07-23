@@ -361,14 +361,15 @@ func parsePoolsideSession(
 					}
 				}
 
-				// Track pending tool call for result pairing by step_id.
+				// Track pending tool call for result pairing by call ID.
 				// In real poolside data, tool_call.parsed and tool_call.result
-				// events have different event IDs; they share the same step_id.
+				// share the same payload ID. Keying by call ID (not step_id)
+				// avoids overwriting when multiple calls share a step.
 				lastMsgOrdinal := 0
 				if len(messages) > 0 {
 					lastMsgOrdinal = messages[len(messages)-1].Ordinal
 				}
-				pendingToolCalls[event.StepID] = &pendingToolCallInfo{
+				pendingToolCalls[tc.ID] = &pendingToolCallInfo{
 					ordinal:   lastMsgOrdinal,
 					name:      name,
 					toolUseID: toolUseID,
@@ -414,11 +415,10 @@ func parsePoolsideSession(
 					}
 				}
 
-				// Pair result with pending tool call using step_id.
-				if info, ok := pendingToolCalls[event.StepID]; ok {
+				// Pair result with pending tool call using the payload call ID.
+				if info, ok := pendingToolCalls[tr.ID]; ok {
 					if info.ordinal > 0 && info.ordinal <= len(messages) {
 						msg := &messages[info.ordinal-1]
-						// Find the tool call by toolUseID for precise pairing.
 						for i := range msg.ToolCalls {
 							if msg.ToolCalls[i].ToolUseID == info.toolUseID {
 								msg.ToolCalls[i].ResultEvents = append(msg.ToolCalls[i].ResultEvents, ParsedToolResultEvent{
@@ -430,7 +430,7 @@ func parsePoolsideSession(
 							}
 						}
 					}
-					delete(pendingToolCalls, event.StepID)
+					delete(pendingToolCalls, tr.ID)
 				}
 			}
 
