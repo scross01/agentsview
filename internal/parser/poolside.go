@@ -276,7 +276,7 @@ func parsePoolsideSession(
 					// Order dependency: if a future version of
 					// poolside reorders these events, attribution
 					// falls through to the currentModel fallback.
-					msgModel, _ := pendingInferences[currentMsgStepID]
+					msgModel := pendingInferences[currentMsgStepID]
 					msgModel = strings.TrimSpace(msgModel)
 					if msgModel == "" {
 						msgModel = currentModel
