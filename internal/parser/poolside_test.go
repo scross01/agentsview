@@ -48,7 +48,7 @@ func TestParsePoolsideSession(t *testing.T) {
 	assert.True(t, sess.HasTotalOutputTokens)
 	assert.Equal(t, 50, sess.TotalOutputTokens)
 	assert.True(t, sess.HasPeakContextTokens)
-	assert.Equal(t, 1000, sess.PeakContextTokens)
+	assert.Equal(t, 1500, sess.PeakContextTokens)
 }
 
 func TestParsePoolsideSessionWithToolCalls(t *testing.T) {
@@ -416,8 +416,8 @@ func TestParsePoolsideSessionModelSwitch(t *testing.T) {
 	assert.Equal(t, 140, sess.TotalOutputTokens,
 		"TotalOutputTokens sums output across inferences, not per-model")
 	assert.True(t, sess.HasPeakContextTokens)
-	assert.Equal(t, 2000, sess.PeakContextTokens,
-		"PeakContextTokens is the max of input_tokens across inferences, not their sum")
+	assert.Equal(t, 2150, sess.PeakContextTokens,
+		"PeakContextTokens is the max of total context (input + cache read + cache write) across inferences")
 
 	// Assistant messages carry the model that produced the turn.
 	// Turn order in msgs: [user@1, asst@2, user@3, asst@4]. The
@@ -461,7 +461,7 @@ func TestParsePoolsideSessionPeakContextIsMax(t *testing.T) {
 
 	require.Len(t, usageEvents, 3)
 	assert.Equal(t, 2500, sess.PeakContextTokens,
-		"PeakContextTokens must be the max of input_tokens across inferences")
+		"PeakContextTokens must be the max of total context (input + cache read + cache write) across inferences")
 }
 
 // TestParsePoolsideSessionInferenceWithoutStart covers the edge case

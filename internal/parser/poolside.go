@@ -12,7 +12,6 @@
 package parser
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -154,9 +153,10 @@ func parsePoolsideSession(
 	// Aggregate tokens across all inference events.
 	var totalOutputTokens int
 	var inferenceCount int
-	// Peak context is the maximum input_tokens seen on a single
-	// inference call, not the cumulative sum across calls.
-	var peakInputTokens int
+	// Peak context is the maximum total context (input + cache read +
+	// cache write) seen on a single inference call, not the cumulative
+	// sum across calls.
+	var peakContextTokens int
 
 	// pendingInferences[step_id] = model. Populated on each
 	// tool_call.inference.start and consumed by the matching
@@ -192,18 +192,20 @@ func parsePoolsideSession(
 	sessionID := poolsideIDPrefix + strings.TrimPrefix(fileName, "trajectory-")
 	sessionID = strings.TrimSuffix(sessionID, ".ndjson")
 
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // up to 10MB per line
+	lr := newLineReader(file, maxLineSize)
+	defer releaseLineReader(lr)
+	var malformedLines int
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
+	for {
+		line, ok := lr.next()
+		if !ok {
+			break
 		}
 
 		var event poolsideEvent
-		if err := json.Unmarshal(line, &event); err != nil {
-			continue // Skip malformed lines
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			malformedLines++
+			continue
 		}
 
 		ts := parsePoolsideTimestamp(event.Timestamp)
@@ -447,8 +449,9 @@ func parsePoolsideSession(
 			if event.ToolCallInferenceEnd != nil {
 				inf := event.ToolCallInferenceEnd
 				totalOutputTokens += inf.OutputTokens
-				if inf.InputTokens > peakInputTokens {
-					peakInputTokens = inf.InputTokens
+				totalContext := inf.InputTokens + inf.CacheReadInputTokens + inf.CacheWriteInputTokens
+				if totalContext > peakContextTokens {
+					peakContextTokens = totalContext
 				}
 				inferenceCount++
 
@@ -491,11 +494,13 @@ func parsePoolsideSession(
 			}
 
 		case "session.error":
-			// Track errors but don't emit as messages.
+			if event.SessionError != nil && event.SessionError.Error != "" {
+				exitReason = "session_error"
+			}
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
+	if err := lr.Err(); err != nil {
 		return nil, nil, nil, fmt.Errorf("reading trajectory file: %w", err)
 	}
 
@@ -564,6 +569,7 @@ func parsePoolsideSession(
 		EndedAt:           endedAt,
 		MessageCount:      len(messages),
 		UserMessageCount:  userMsgCount,
+		MalformedLines:    malformedLines,
 		SourceSessionID:   strings.TrimPrefix(sessionID, poolsideIDPrefix),
 		SourceVersion:     "poolside-trajectory-v1",
 		File:              fileInfo,
@@ -571,15 +577,16 @@ func parsePoolsideSession(
 	}
 
 	// Set aggregate session-level token fields. Peak context is the
-	// largest input_tokens seen on a single inference, not a sum.
-	// Per-inference usage events were emitted inline above so this
-	// block does not produce a duplicate aggregate event.
+	// largest total context (input + cache read + cache write) seen on
+	// a single inference, not a sum. Per-inference usage events were
+	// emitted inline above so this block does not produce a duplicate
+	// aggregate event.
 	if inferenceCount > 0 {
 		sess.HasTotalOutputTokens = true
 		sess.TotalOutputTokens = totalOutputTokens
-		if peakInputTokens > 0 {
+		if peakContextTokens > 0 {
 			sess.HasPeakContextTokens = true
-			sess.PeakContextTokens = peakInputTokens
+			sess.PeakContextTokens = peakContextTokens
 		}
 	}
 
@@ -626,8 +633,9 @@ func classifyPoolsideTermination(reason string, messages []ParsedMessage) Termin
 	switch reason {
 	case "", "exit_tool_called", "cancelled":
 		return TerminationClean
-	case "memory_compression_error":
-		// Memory compression errors indicate the session was interrupted.
+	case "memory_compression_error", "session_error":
+		// Memory compression errors and session errors indicate
+		// the session was interrupted.
 		return TerminationTruncated
 	case "user_cancelled":
 		return TerminationClean
