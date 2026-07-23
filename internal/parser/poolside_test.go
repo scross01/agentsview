@@ -573,3 +573,38 @@ func TestPoolsideInferenceSourceAndDedupKeyShape(t *testing.T) {
 	assert.Contains(t, ev.SessionID, "poolside:")
 	assert.NotEmpty(t, ev.OccurredAt)
 }
+
+func TestPoolsideTrajectoriesDir(t *testing.T) {
+	tests := []struct {
+		name     string
+		root     string
+		expected string
+	}{
+		{
+			name:     "application-data root appends trajectories",
+			root:     "/home/user/.local/share/poolside",
+			expected: "/home/user/.local/share/poolside/trajectories",
+		},
+		{
+			name:     "trajectories directory used as-is",
+			root:     "/home/user/.local/share/poolside/trajectories",
+			expected: "/home/user/.local/share/poolside/trajectories",
+		},
+		{
+			name:     "relative trajectories used as-is",
+			root:     "trajectories",
+			expected: "trajectories",
+		},
+		{
+			name:     "trajectories with trailing slash",
+			root:     "/home/user/.local/share/poolside/trajectories/",
+			expected: "/home/user/.local/share/poolside/trajectories",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := poolsideTrajectoriesDir(tt.root)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}

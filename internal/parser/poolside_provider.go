@@ -43,13 +43,27 @@ func newPoolsideProviderFactory(def AgentDef) ProviderFactory {
 	)
 }
 
+// poolsideTrajectoriesDir resolves the trajectories directory from a
+// provider root. The root may be either the application-data directory
+// (e.g. ~/.local/share/poolside) or the trajectories/ subdirectory
+// itself (e.g. when passed by remote sync). When the root already
+// ends with a "trajectories" path component, it is returned as-is;
+// otherwise <root>/trajectories is appended.
+func poolsideTrajectoriesDir(root string) string {
+	clean := filepath.Clean(root)
+	if filepath.Base(clean) == "trajectories" {
+		return clean
+	}
+	return filepath.Join(clean, "trajectories")
+}
+
 // poolsideDiscoverEach finds all trajectory NDJSON files under a root
-// using streaming discovery. root is the poolside data directory;
-// trajectories live under <root>/trajectories/.
+// using streaming discovery. root may be the application-data
+// directory or the trajectories/ subdirectory itself.
 func poolsideDiscoverEach(
 	ctx context.Context, root string, yield func(singleFileMatch) error,
 ) error {
-	trajectoriesDir := filepath.Join(root, "trajectories")
+	trajectoriesDir := poolsideTrajectoriesDir(root)
 	return streamDirectoryEntries(ctx, trajectoriesDir, func(entry os.DirEntry) error {
 		if entry.IsDir() {
 			return nil
@@ -68,7 +82,7 @@ func poolsideDiscoverEach(
 func poolsideWatchRoots(roots []string) []WatchRoot {
 	out := make([]WatchRoot, 0, len(roots))
 	for _, root := range roots {
-		trajectoriesDir := filepath.Join(root, "trajectories")
+		trajectoriesDir := poolsideTrajectoriesDir(root)
 		out = append(out, WatchRoot{
 			Path:         trajectoriesDir,
 			Recursive:    false,
@@ -86,7 +100,7 @@ func poolsideClassifyPath(
 	root = filepath.Clean(root)
 	path = filepath.Clean(path)
 
-	trajectoriesDir := filepath.Join(root, "trajectories")
+	trajectoriesDir := poolsideTrajectoriesDir(root)
 	rel, err := filepath.Rel(trajectoriesDir, path)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return singleFileMatch{}, false
@@ -116,7 +130,7 @@ func poolsideClassifyPath(
 // poolsideFindFile finds a trajectory file by raw ID under the root.
 // The raw ID is the part after "poolside:" prefix (e.g. "standalone_<uuid>").
 func poolsideFindFile(root, rawID string) (singleFileMatch, bool) {
-	trajectoriesDir := filepath.Join(root, "trajectories")
+	trajectoriesDir := poolsideTrajectoriesDir(root)
 	path := filepath.Join(trajectoriesDir, "trajectory-"+rawID+".ndjson")
 	if info, err := os.Stat(path); err == nil && !info.IsDir() {
 		return singleFileMatch{Path: path}, true

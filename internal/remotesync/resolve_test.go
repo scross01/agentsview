@@ -325,11 +325,14 @@ func TestResolveTargetsMatchesSSHResolverForRepresentativeHome(t *testing.T) {
 	windsurfWorkspaceDir := filepath.Join(windsurfWorkspaceRoot, "workspace-a")
 	windsurfStateDB := filepath.Join(windsurfWorkspaceDir, parser.WindsurfStateDBName)
 	windsurfWorkspaceJSON := filepath.Join(windsurfWorkspaceDir, "workspace.json")
+	poolsideRoot := filepath.Join(home, ".local", "share", "poolside")
+	poolsideTrajectories := filepath.Join(poolsideRoot, "trajectories")
 	require.NoError(t, os.MkdirAll(claudeDir, 0o755))
 	require.NoError(t, os.MkdirAll(codexDir, 0o755))
 	require.NoError(t, os.MkdirAll(devinDir, 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Dir(aiderHistory), 0o755))
 	require.NoError(t, os.MkdirAll(windsurfWorkspaceDir, 0o755))
+	require.NoError(t, os.MkdirAll(poolsideTrajectories, 0o755))
 	require.NoError(t, os.WriteFile(aiderHistory, []byte("# aider\n"), 0o644))
 	require.NoError(t, os.WriteFile(windsurfStateDB, []byte("state"), 0o644))
 	require.NoError(t, os.WriteFile(windsurfWorkspaceJSON, []byte("{}\n"), 0o644))
@@ -345,13 +348,12 @@ func TestResolveTargetsMatchesSSHResolverForRepresentativeHome(t *testing.T) {
 
 	goTargets := remotesync.ResolveTargets(config.Config{
 		AgentDirs: map[parser.AgentType][]string{
-			parser.AgentClaude: {claudeDir},
-			parser.AgentCodex:  {codexDir},
-			parser.AgentDevin:  {devinDir},
-			parser.AgentAider:  {aiderRoot},
-			parser.AgentWindsurf: {
-				windsurfUserRoot,
-			},
+			parser.AgentClaude:     {claudeDir},
+			parser.AgentCodex:      {codexDir},
+			parser.AgentDevin:      {devinDir},
+			parser.AgentAider:      {aiderRoot},
+			parser.AgentWindsurf:   {windsurfUserRoot},
+			parser.AgentPoolside:   {poolsideRoot},
 		},
 	})
 	assert.ElementsMatch(t, sshDirs[parser.AgentClaude], goTargets.Dirs[parser.AgentClaude])
@@ -372,6 +374,10 @@ func TestResolveTargetsMatchesSSHResolverForRepresentativeHome(t *testing.T) {
 	assert.ElementsMatch(t, sshFiles[parser.AgentWindsurf], goTargets.Files[parser.AgentWindsurf])
 	assert.NotContains(t, sshDirs[parser.AgentWindsurf], windsurfWorkspaceRoot)
 	assert.ElementsMatch(t, sshExtra, goTargets.ExtraFiles)
+	// Poolside: both resolvers must narrow to the trajectories/
+	// subdirectory, not the application-data root.
+	assert.ElementsMatch(t, []string{poolsideTrajectories}, sshDirs[parser.AgentPoolside])
+	assert.ElementsMatch(t, sshDirs[parser.AgentPoolside], goTargets.Dirs[parser.AgentPoolside])
 }
 
 func TestSelectAllowedFiles(t *testing.T) {
