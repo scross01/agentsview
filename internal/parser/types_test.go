@@ -234,6 +234,7 @@ func TestAgentByType(t *testing.T) {
 		{AgentDevin, true},
 		{AgentDeepSeekTUI, true},
 		{AgentDeepSeekHarness, true},
+		{AgentCline, true},
 		{"unknown", false},
 	}
 	for _, tt := range tests {
@@ -412,6 +413,12 @@ func TestAgentByPrefix(t *testing.T) {
 			true,
 		},
 		{
+			"cline prefix",
+			"cline:sess-id",
+			AgentCline,
+			true,
+		},
+		{
 			"remote deepseek tui prefix",
 			"devbox~deepseek-tui:sess-id",
 			AgentDeepSeekTUI,
@@ -515,6 +522,7 @@ func TestRegistryCompleteness(t *testing.T) {
 		AgentEvener,
 		AgentReasonix,
 		AgentRooCode,
+		AgentCline,
 		AgentPoolside,
 		AgentOmnigent,
 		AgentCodebuff,

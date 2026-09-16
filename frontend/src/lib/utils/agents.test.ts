@@ -27,6 +27,7 @@ describe("KNOWN_AGENTS", () => {
       "opencodereview",
       "kilo",
       "kilo-legacy",
+      "cline",
       "openhands",
       "cursor",
       "cursor-ide",
@@ -106,6 +107,7 @@ describe("agentColor", () => {
     expect(agentColor("piebald")).toBe("var(--accent-orange)");
     expect(agentColor("roocode")).toBe("var(--accent-rose)");
     expect(agentColor("omnigent")).toBe("var(--accent-teal)");
+    expect(agentColor("cline")).toBe("var(--accent-violet)");
   });
 
   it("falls back to blue for unknown agents", () => {
